@@ -16,6 +16,14 @@ from yolo_calibration.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# In-process memoization on top of the disk cache. A single build run can
+# call cached_call() with the same (namespace, key) millions of times (e.g.
+# market-cap lookups bucketed by ticker+month across years of ticker-days);
+# without this, every one of those calls would still pay a disk read +
+# JSON decode even on a cache hit. Point-in-time values for a given key
+# never change within a run, so in-memory reuse is always safe here.
+_memo: dict[tuple[str, str], Any] = {}
+
 
 def _cache_dir() -> Path:
     cfg = load_massive_api_config()["caching"]
@@ -33,6 +41,10 @@ def cached_call(namespace: str, key: str, ttl_days: float, fetch_fn: Callable[[]
     """Return cached value for (namespace, key) if fresh, else call fetch_fn,
     persist the result, and return it. `key` should encode all params that
     affect the result (e.g. f"{ticker}:{date}")."""
+    memo_key = (namespace, key)
+    if memo_key in _memo:
+        return _memo[memo_key]
+
     path = _key_to_filename(namespace, key)
     now = time.time()
     if path.exists():
@@ -40,6 +52,7 @@ def cached_call(namespace: str, key: str, ttl_days: float, fetch_fn: Callable[[]
             payload = json.loads(path.read_text(encoding="utf-8"))
             age_days = (now - payload["_cached_at"]) / 86400.0
             if age_days <= ttl_days:
+                _memo[memo_key] = payload["value"]
                 return payload["value"]
         except (json.JSONDecodeError, KeyError):
             logger.warning("Corrupt cache entry %s, refetching", path)
@@ -49,4 +62,5 @@ def cached_call(namespace: str, key: str, ttl_days: float, fetch_fn: Callable[[]
         json.dumps({"_cached_at": now, "_key": key, "value": value}, default=str),
         encoding="utf-8",
     )
+    _memo[memo_key] = value
     return value
