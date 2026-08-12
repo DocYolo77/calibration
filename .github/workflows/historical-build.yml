@@ -64,15 +64,6 @@ jobs:
           python -m yolo_calibration fetch-qqq-constituents --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" $FORCE_FLAG || \
           echo "::warning::QQQ constituent fetch failed or incomplete — QQQ health track may be unavailable (spec section 10 hard-stop behavior)."
 
-      - name: Save raw checkpoints to cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            data/raw
-            data/cache
-          key: yolo-raw-${{ inputs.start_date }}-${{ inputs.end_date }}-${{ github.run_id }}
-
       - name: Build market universe
         env:
           MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
@@ -95,7 +86,25 @@ jobs:
       - name: Verify + generate reports
         run: python -m yolo_calibration verify --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
 
+      # Runs at the END (after the expensive market-cap enrichment step, not
+      # before it) and unconditionally via if: always(), so that raw
+      # checkpoints AND every market-cap lookup made so far are persisted
+      # even if a later step fails or the job times out — a re-run with the
+      # same start_date/end_date then resumes instead of redoing this work.
+      # (Saving only once, here, also avoids a duplicate-key conflict with
+      # the "Restore" step's cache entry — actions/cache keys are immutable
+      # within a run.)
+      - name: Save raw + reference-data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/raw
+            data/cache
+          key: yolo-raw-${{ inputs.start_date }}-${{ inputs.end_date }}-${{ github.run_id }}
+
       - name: Upload processed data as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: yolo-calibration-processed-${{ inputs.start_date }}-${{ inputs.end_date }}
