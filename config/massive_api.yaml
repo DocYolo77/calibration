@@ -50,7 +50,12 @@ http:
   max_retries: 5
   backoff_factor_seconds: 2.0
   retry_on_status: [429, 500, 502, 503, 504]
-  requests_per_minute_soft_limit: 90  # client-side throttle; adjust per plan tier
+  # Massive's documented guidance: keep automated traffic under 100
+  # requests/second to avoid server-side throttling/429s. We stay well
+  # under that ceiling (50 req/s = 3000/min) to leave headroom for retry
+  # bursts and any other concurrent usage of the same key, while still
+  # being ~33x less conservative than the original untuned default (90/min).
+  requests_per_minute_soft_limit: 3000  # client-side throttle; adjust per plan tier
 
 caching:
   reference_data_dir: "data/cache/reference"

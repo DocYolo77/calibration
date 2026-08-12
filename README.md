@@ -278,11 +278,20 @@ Dezil vs. Momentum-Environment-Outcomes). Diese Reports optimieren
   nicht als vollständige OpenAPI-Spec — kleinere Feldnamen-Abweichungen
   sind beim ersten echten Lauf möglich und sollten dort auffallen
   (HTTP-Fehler/leere Ergebnisse werden geloggt, nicht verschluckt).
-- ADR/Plan-Limits (Rate Limits, Endpoint-Verfügbarkeit für ETF-Global-
-  Constituents auf dem konkret gebuchten Plan) sind unbekannt — der Client
-  hat konfigurierbares Rate-Limiting/Retry (`config/massive_api.yaml`
-  `http:`), aber die konkreten Limits müssen beim ersten Lauf beobachtet
-  und ggf. angepasst werden.
+- **Bestätigt durch den ersten Live-Testlauf (Jan. 2023, 2026-08-12):**
+  der `/etf-global/v1/constituents`-Endpoint (Quelle A für QQQ-Holdings)
+  liefert `403 "You are not entitled to this data"` auf dem aktuell
+  gebuchten Plan — der QQQ-Health-Track ist damit vorerst blockiert
+  (korrekt als "unavailable" markiert, kein stiller Fallback). Die
+  Stock-Pipeline (Universe/Features/Outcomes) lief im selben Test
+  vollständig fehlerfrei durch.
+- Rate Limit: laut Massive-Doku bis zu 100 Requests/Sekunde, bevor
+  serverseitiges Throttling/429 einsetzt. `requests_per_minute_soft_limit`
+  in `config/massive_api.yaml` steht auf 3000 (=50/s, Sicherheitsmarge
+  unter dem dokumentierten Ceiling). Der ursprüngliche konservative
+  Default von 90/min hätte einen vollen 2022–2026-Backfill auf
+  schätzungsweise 10+ Stunden gestreckt (Hochrechnung aus dem
+  Market-Cap-Enrichment-Schritt des Testlaufs).
 
 ## Offene Fragen vor Phase 2
 
