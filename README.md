@@ -295,6 +295,27 @@ Dezil vs. Momentum-Environment-Outcomes). Diese Reports optimieren
 
 ## Offene Fragen vor Phase 2
 
+0. **Wahrscheinlich nicht-point-in-time Split-Adjustierung bei den Preisen selbst.**
+   Beim Explorieren der echten 2023-Testdaten (250 Handelstage, 2,66 Mio.
+   Zeilen) fielen 46 Ticker mit unplausiblen Close-Preisen auf (bis zu
+   mehrere hundert Milliarden USD/Aktie, 5.924 Zeilen ≈ 0,22%, davon 5.141
+   als eligible markiert — z.B. `MULN` am 2023-06-15 mit $14,1 Mrd./Aktie
+   statt real ca. $1–3). Plausible Ursache: der grouped-daily Endpoint wird
+   mit `adjusted=true` abgefragt; das adjustiert vermutlich rückwirkend
+   anhand ALLER Splits, die bis zum BUILD-Zeitpunkt (heute) bekannt sind,
+   nicht nur bis zum jeweils historischen Datum — bei Penny Stocks mit
+   mehreren Reverse-Splits zwischen 2023 und heute kumuliert sich das zu
+   absurden Werten. Das ist potenziell ein eigenständiges Point-in-Time-
+   Problem bei den PREISEN selbst (nicht nur beim Universe/den
+   Constituents, wo das Projekt bereits explizit adressiert). **Nicht
+   automatisch korrigiert** — ein `implausible_price_row_count`-Diagnose-
+   Feld (Schwelle: Close > $1.000.000, sicher über dem höchsten je
+   legitim gehandelten US-Preis von BRK.A ~$700k) wurde dem
+   Data-Quality-Report hinzugefügt, damit jeder Build das automatisch
+   aufdeckt. Die richtige Methodik (z.B. `adjusted=false` + eigene
+   point-in-time Split-Rekonstruktion, oder ein anderer Ansatz) ist eine
+   Research-/Engineering-Entscheidung, die vor Phase 2 getroffen werden
+   sollte.
 1. Ist die Monats-Cache-Granularität für Market-Cap-Enrichment
    (`compute_point_in_time_market_cap`) präzise genug, oder wird eine
    feingranularere (Filing-Datum-genaue) Rekonstruktion benötigt?

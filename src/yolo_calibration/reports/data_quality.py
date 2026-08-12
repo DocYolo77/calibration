@@ -45,6 +45,31 @@ def build_data_quality_report(
             report["warnings"].append(
                 "Median eligible universe size is unexpectedly small (<50) — check filters/data coverage."
             )
+
+        # Diagnostic only — detects, does not correct. Found via manual data
+        # exploration of the 2023 test backfill: a small number of tickers
+        # (mostly micro-caps with several reverse splits) show close prices
+        # in the hundreds of billions of USD. Likely cause: the grouped-daily
+        # endpoint is queried with adjusted=true, which plausibly adjusts
+        # historical prices for ALL splits known as of the BUILD date rather
+        # than only splits known as of the historical date itself — a
+        # potential point-in-time leak in the price series (not just the
+        # universe membership). $1,000,000 is chosen as a threshold safely
+        # above the highest legitimate US common stock price on record
+        # (BRK.A, ~$700k) to minimize false positives. This is flagged, not
+        # fixed — the correct point-in-time price-adjustment methodology is
+        # an open research/engineering question (see README "Offene Fragen").
+        implausible = mu[mu["close"] > 1_000_000]
+        report["implausible_price_row_count"] = int(len(implausible))
+        report["implausible_price_ticker_count"] = int(implausible["ticker"].nunique())
+        if not implausible.empty:
+            report["warnings"].append(
+                f"{len(implausible)} row(s) across {implausible['ticker'].nunique()} ticker(s) have a "
+                f"close price above $1,000,000 — likely a non-point-in-time split adjustment artifact "
+                f"(adjusted=true probably applies splits known as of the BUILD date, not the historical "
+                f"date). NOT auto-corrected; flagged as an open question for Phase 2. Example tickers: "
+                f"{sorted(implausible['ticker'].unique())[:10]}"
+            )
     else:
         report["warnings"].append("market_universe_daily is empty.")
 
@@ -88,6 +113,9 @@ def write_data_quality_report(report: dict, out_dir: Path | None = None) -> tupl
     lines.append(f"- Median eligible universe size: {report.get('median_eligible_universe_size', 'n/a')}")
     lines.append(f"- Missing market cap %: {report.get('missing_market_cap_pct', 'n/a')}")
     lines.append(f"- Missing OHLC %: {report.get('missing_ohlc_pct', 'n/a')}")
+    lines.append(f"- Implausible price rows (close > $1,000,000): "
+                  f"{report.get('implausible_price_row_count', 'n/a')} "
+                  f"across {report.get('implausible_price_ticker_count', 'n/a')} ticker(s)")
     lines.append(f"- Stock feature rows: {report.get('stock_feature_rows', 'n/a')}")
     lines.append(f"- Stock outcome rows: {report.get('stock_outcome_rows', 'n/a')}")
     lines.append(f"- QQQ health status: {report.get('qqq_health_status', 'n/a')}")
