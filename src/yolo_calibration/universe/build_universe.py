@@ -50,15 +50,13 @@ def _load_asset_type_ok(start: date, end: date) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def compute_point_in_time_market_cap(client: MassiveClient, ticker: str, as_of_date: date,
-                                      close_price: float) -> float | None:
-    """market_cap = historical close * point-in-time weighted_shares_outstanding.
-    See config/market_cap_methodology.yaml. Cached at monthly granularity
-    (query the API with the first-of-month date <= as_of_date) since shares
-    outstanding only changes at SEC filing boundaries; this is always a
-    conservative (never-future) point-in-time value, just not maximally
-    fresh within the month."""
-    bucket_date = as_of_date.replace(day=1)
+def fetch_point_in_time_shares_outstanding(client: MassiveClient, ticker: str, bucket_date: date) -> float | None:
+    """Point-in-time weighted_shares_outstanding for (ticker, bucket_date).
+    `bucket_date` must already be the first of a month — this IS the
+    monthly caching granularity described in config/market_cap_methodology.yaml
+    (shares outstanding only changes at SEC filing boundaries, so querying
+    with a first-of-month date is always a conservative, never-future,
+    point-in-time value — just not maximally fresh within the month)."""
     key = f"{ticker}:{bucket_date.isoformat()}"
 
     def _fetch():
@@ -67,7 +65,17 @@ def compute_point_in_time_market_cap(client: MassiveClient, ticker: str, as_of_d
             return None
         return overview.get("weighted_shares_outstanding")
 
-    shares = cached_call("ticker_overview_shares", key, ttl_days=36500, fetch_fn=_fetch)
+    return cached_call("ticker_overview_shares", key, ttl_days=36500, fetch_fn=_fetch)
+
+
+def compute_point_in_time_market_cap(client: MassiveClient, ticker: str, as_of_date: date,
+                                      close_price: float) -> float | None:
+    """market_cap = historical close * point-in-time weighted_shares_outstanding.
+    See config/market_cap_methodology.yaml. Convenience single-row wrapper;
+    build_market_universe_daily uses the batched
+    fetch_point_in_time_shares_outstanding path directly for performance
+    (one lookup per unique (ticker, month) instead of per ticker-day)."""
+    shares = fetch_point_in_time_shares_outstanding(client, ticker, as_of_date.replace(day=1))
     if shares is None or close_price is None or pd.isna(close_price):
         return None
     return float(close_price) * float(shares)
@@ -96,13 +104,28 @@ def build_market_universe_daily(client: MassiveClient, start: date, end: date) -
     merged["adr20_ok"] = merged["adr20"] > adr_min
     candidates = merged[merged["asset_type_ok"] & merged["adr20_ok"]].copy()
 
-    logger.info("Market-cap enrichment for %d candidate ticker-days (post asset-type + ADR20 filter)...",
-                len(candidates))
-    market_caps = []
-    for row in candidates.itertuples(index=False):
-        mc = compute_point_in_time_market_cap(client, row.ticker, row.date.date(), row.close)
-        market_caps.append(mc)
-    candidates["market_cap"] = market_caps
+    # Shares outstanding is looked up per (ticker, month) — not per
+    # ticker-day — since that's the actual caching/API granularity (see
+    # fetch_point_in_time_shares_outstanding). Deduplicating BEFORE the
+    # lookup loop turns what would be millions of ticker-day iterations
+    # (mostly redundant repeats of the same handful of tickers across
+    # consecutive days) into one lookup per unique ticker-month, then a
+    # single vectorized merge + multiply back onto every candidate row.
+    candidates["bucket_month"] = candidates["date"].values.astype("datetime64[M]")
+    unique_ticker_months = candidates[["ticker", "bucket_month"]].drop_duplicates().reset_index(drop=True)
+    logger.info(
+        "Market-cap enrichment: %d unique ticker-months to look up (from %d candidate ticker-days, "
+        "post asset-type + ADR20 filter)...",
+        len(unique_ticker_months), len(candidates),
+    )
+    shares_values = [
+        fetch_point_in_time_shares_outstanding(client, row.ticker, pd.Timestamp(row.bucket_month).date())
+        for row in unique_ticker_months.itertuples(index=False)
+    ]
+    unique_ticker_months["shares_outstanding"] = shares_values
+
+    candidates = candidates.merge(unique_ticker_months, on=["ticker", "bucket_month"], how="left")
+    candidates["market_cap"] = candidates["close"] * candidates["shares_outstanding"]
     candidates["market_cap_ok"] = candidates["market_cap"].fillna(0) >= mcap_min
 
     out = merged.merge(

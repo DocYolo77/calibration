@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import yolo_calibration.data.cache as cache
 import yolo_calibration.data.storage as storage
 from yolo_calibration.data.massive_client import MassiveClient
 from yolo_calibration.features.build_features import build_stock_features_daily
@@ -22,6 +23,10 @@ def isolated_storage(tmp_path, monkeypatch):
     processed_dir = tmp_path / "processed"
     monkeypatch.setattr(storage, "RAW_DIR", raw_dir)
     monkeypatch.setattr(storage, "PROCESSED_DIR", processed_dir)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cache, "_cache_dir", lambda: cache_dir)
+    cache._memo.clear()  # module-level memo must not leak between tests
     return raw_dir, processed_dir
 
 
@@ -78,3 +83,34 @@ def test_full_pipeline_wiring(isolated_storage, stub_client):
     non_eligible = features[~features["eligible"]]
     if not non_eligible.empty:
         assert non_eligible["rs_percentile_1m"].isna().all()
+
+
+def test_market_cap_enrichment_batches_by_ticker_month_not_ticker_day(isolated_storage, monkeypatch):
+    """Regression test: a multi-year backfill has millions of candidate
+    ticker-days but only a few tens of thousands of unique (ticker, month)
+    combinations. Market-cap enrichment must look up shares-outstanding
+    once per unique ticker-month, not once per ticker-day, or a full
+    backfill's API-call count (and wall-clock time) blows up by orders of
+    magnitude. This test fails if that batching regresses."""
+    call_log = []
+
+    def counting_get_ticker_overview(self, ticker, as_of_date=None):
+        call_log.append((ticker, as_of_date))
+        return {"weighted_shares_outstanding": 20_000_000_000}
+
+    monkeypatch.setattr(MassiveClient, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(MassiveClient, "get_ticker_overview", counting_get_ticker_overview)
+    client = MassiveClient()
+
+    tickers = ["AAA", "BBB", "CCC"]
+    # 60 business days spans parts of 3 calendar months for 3 tickers ->
+    # at most 9 unique (ticker, month) pairs, vs. up to 180 ticker-days.
+    dates = _write_synthetic_raw(date(2023, 1, 2), 60, tickers)
+    start, end = dates[0].date(), dates[-1].date()
+
+    universe = build_market_universe_daily(client, start, end)
+    assert not universe.empty
+
+    unique_ticker_months = len({(t, d.year, d.month) for t in tickers for d in dates})
+    assert len(call_log) <= unique_ticker_months
+    assert len(call_log) < len(universe)  # must be far fewer calls than ticker-day rows
