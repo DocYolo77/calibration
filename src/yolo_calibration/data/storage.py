@@ -71,6 +71,48 @@ def list_raw_grouped_daily_dates(start: date, end: date) -> list[date]:
     return sorted(found)
 
 
+# ---- RAW checkpoint layer: grouped daily bars, UNADJUSTED -----------------
+#
+# Separate from the (split-)adjusted series above. Needed specifically for
+# point-in-time-correct market cap (config/market_cap_methodology.yaml):
+# adjusted=true back-adjusts a historical close using ALL splits known as of
+# the BUILD date, not just splits known as of that historical date — fine
+# (scale-invariant) for every ratio-based feature/outcome, but wrong for
+# market_cap, which must use the price actually observed on that date.
+
+def raw_grouped_daily_unadjusted_path(trading_date: date) -> Path:
+    return RAW_DIR / "grouped_daily_unadjusted" / f"year={trading_date.year}" / f"date={trading_date.isoformat()}.parquet"
+
+
+def raw_grouped_daily_unadjusted_exists(trading_date: date) -> bool:
+    return raw_grouped_daily_unadjusted_path(trading_date).exists()
+
+
+def write_raw_grouped_daily_unadjusted(trading_date: date, records: list[dict]) -> Path:
+    path = raw_grouped_daily_unadjusted_path(trading_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame.from_records(records)
+    df.to_parquet(path, index=False)
+    return path
+
+
+def read_raw_grouped_daily_unadjusted(trading_date: date) -> pd.DataFrame | None:
+    path = raw_grouped_daily_unadjusted_path(trading_date)
+    if not path.exists():
+        return None
+    return pd.read_parquet(path)
+
+
+def list_raw_grouped_daily_unadjusted_dates(start: date, end: date) -> list[date]:
+    found = []
+    for year_dir in RAW_DIR.glob("grouped_daily_unadjusted/year=*"):
+        for f in year_dir.glob("date=*.parquet"):
+            d = date.fromisoformat(f.stem.split("=", 1)[1])
+            if start <= d <= end:
+                found.append(d)
+    return sorted(found)
+
+
 # ---- RAW checkpoint layer: QQQ constituents -------------------------------
 
 def raw_qqq_constituents_path(effective_date: date) -> Path:

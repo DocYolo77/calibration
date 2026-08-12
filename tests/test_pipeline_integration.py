@@ -40,20 +40,34 @@ def stub_client(monkeypatch):
     return MassiveClient()
 
 
-def _write_synthetic_raw(start: date, n_days: int, tickers: list[str]):
+def _write_synthetic_raw(start: date, n_days: int, tickers: list[str], *, adjustment_scale: dict | None = None):
+    """adjustment_scale: optional {ticker: multiplier} applied to the
+    ADJUSTED series only, to simulate a build-time-vs-historical-date split
+    adjustment discrepancy (config/market_cap_methodology.yaml
+    `why_unadjusted_close_specifically`). The UNADJUSTED checkpoint always
+    holds the un-scaled "as traded" price."""
+    adjustment_scale = adjustment_scale or {}
     dates = pd.bdate_range(start=start, periods=n_days)
     rng = np.random.default_rng(3)
     for i, d in enumerate(dates):
-        records = []
+        records, unadj_records = [], []
         for t in tickers:
             base = 100.0 + hash(t) % 50
             close = base * (1 + 0.01 * i + rng.normal(0, 0.005))
-            records.append({
+            scale = adjustment_scale.get(t, 1.0)
+            unadj_records.append({
                 "T": t, "o": close * 0.999, "h": close * 1.06, "l": close * 0.94,
                 "c": close, "v": 5_000_000, "vw": close, "n": 1000,
                 "t": int(pd.Timestamp(d).timestamp() * 1000),
             })
+            adj_close = close * scale
+            records.append({
+                "T": t, "o": adj_close * 0.999, "h": adj_close * 1.06, "l": adj_close * 0.94,
+                "c": adj_close, "v": 5_000_000, "vw": adj_close, "n": 1000,
+                "t": int(pd.Timestamp(d).timestamp() * 1000),
+            })
         storage.write_raw_grouped_daily(d.date(), records)
+        storage.write_raw_grouped_daily_unadjusted(d.date(), unadj_records)
         ref_records = [{"ticker": t, "type": "CS", "market": "stocks", "primary_exchange": "XNAS"}
                        for t in tickers]
         storage.write_raw_reference_tickers(d.date(), ref_records)

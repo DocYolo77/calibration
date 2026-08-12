@@ -13,11 +13,15 @@ method: "historical_close_times_pit_shares_outstanding"
 description: >
   Point-in-time market cap on date D for ticker T is computed as:
 
-      market_cap(T, D) = close_price(T, D) * shares_outstanding(T, D)
+      market_cap(T, D) = close_price_UNADJUSTED(T, D) * shares_outstanding(T, D)
 
   where:
-    - close_price(T, D) is the actual historical closing price on date D,
-      taken from the grouped-daily OHLCV bar for D (never a later date).
+    - close_price_UNADJUSTED(T, D) is the actual AS-TRADED closing price on
+      date D — fetched separately from the `adjusted=true` series used for
+      technical features, via a second grouped-daily call with
+      `adjusted=false` (see data/fetch_raw.py::fetch_grouped_daily_unadjusted_range,
+      data/loaders.py::load_grouped_daily_unadjusted_range). Never a later
+      date, and never the split-adjusted close.
     - shares_outstanding(T, D) is the weighted_shares_outstanding value
       returned by the Massive ticker-overview endpoint when queried with
       `date=D`. That endpoint resolves shares outstanding as of the most
@@ -27,6 +31,36 @@ description: >
   This deliberately avoids ever multiplying a historical price by CURRENT
   (today's) shares outstanding, and avoids ever using today's market_cap
   field rewound onto a historical date.
+
+why_unadjusted_close_specifically: >
+  Investigated 2026-08-12 after the first full-year (2023) live backfill
+  showed 46 tickers with close prices in the hundreds of billions of USD
+  (e.g. MULN at ~$14.1B/share on 2023-06-15, vs. a real traded price of
+  ~$1-3). Root cause: the `adjusted=true` grouped-daily series back-adjusts
+  a historical close using ALL stock splits known as of the BUILD date
+  (e.g. 2026), not just splits known as of that historical date — for
+  penny stocks with several reverse splits between the historical date and
+  the build date, this compounds into absurd absolute price levels.
+
+  This does NOT corrupt the technical feature/outcome pipeline
+  (ADR20, returns, ATR%, ATR extension, thrust, RS percentiles,
+  distance-from-MA, MFE/MAE, ATR multiples): every one of those formulas is
+  a RATIO of quantities computed from the SAME ticker's SAME
+  (consistently, uniformly over-adjusted) price series, so the erroneous
+  scale factor cancels out algebraically — see
+  tests/test_scale_invariance.py, which locks this property in as a
+  regression test. Verified empirically too: MULN's ADR20 in June 2023
+  (~12-20%) is a physically plausible number for a volatile penny stock,
+  even though its absolute close price that same month is nonsense.
+
+  market_cap is the one place this DOES matter, because it is NOT a ratio
+  within one ticker's own series — it multiplies price by an externally
+  sourced share count. An over-adjusted price there produces a genuinely
+  wrong market cap (and, worse, can flip a name from ineligible to
+  eligible purely due to the price artifact). Hence: market_cap uses the
+  unadjusted close; every other feature/outcome keeps using the adjusted
+  (split-continuous) series, which is standard and correct practice for
+  ratio-based technical analysis.
 
 known_limitations:
   - >
@@ -51,6 +85,7 @@ explicitly_forbidden:
   - "Using today's live market_cap field for a historical eligibility date."
   - "Using today's shares outstanding multiplied by a historical price."
   - "Silently dropping a ticker from history because it lacks a *current* market cap."
+  - "Using the split-ADJUSTED close for market_cap (see why_unadjusted_close_specifically above)."
 
 open_question_for_phase_2: >
   Whether a stricter point-in-time source (e.g. per-filing-date shares

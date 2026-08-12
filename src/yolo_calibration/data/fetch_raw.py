@@ -13,9 +13,11 @@ from datetime import date
 from yolo_calibration.data.massive_client import MassiveClient
 from yolo_calibration.data.storage import (
     raw_grouped_daily_exists,
+    raw_grouped_daily_unadjusted_exists,
     raw_qqq_constituents_exists,
     raw_reference_tickers_exists,
     write_raw_grouped_daily,
+    write_raw_grouped_daily_unadjusted,
     write_raw_qqq_constituents,
     write_raw_reference_tickers,
 )
@@ -42,6 +44,29 @@ def fetch_grouped_daily_range(client: MassiveClient, start: date, end: date, *, 
         else:
             fetched += 1
             logger.info("Fetched grouped-daily for %s: %d tickers", d, len(records))
+    return {"fetched": fetched, "skipped_existing": skipped, "empty_holiday_days": holidays}
+
+
+def fetch_grouped_daily_unadjusted_range(client: MassiveClient, start: date, end: date, *,
+                                          force: bool = False) -> dict:
+    """Fetch bulk grouped-daily OHLCV with adjusted=false (raw, as-traded
+    prices). Used ONLY for point-in-time-correct market cap — see
+    config/market_cap_methodology.yaml. adjusted=true (fetch_grouped_daily_range)
+    remains the basis for all technical/outcome features, which are
+    scale-invariant to the (build-time, not point-in-time) split adjustment
+    and benefit from split-continuity within rolling windows."""
+    fetched, skipped, holidays = 0, 0, 0
+    for d in iter_candidate_weekdays(start, end):
+        if not force and raw_grouped_daily_unadjusted_exists(d):
+            skipped += 1
+            continue
+        records = client.get_grouped_daily(d, adjusted=False)
+        write_raw_grouped_daily_unadjusted(d, records)
+        if not records:
+            holidays += 1
+        else:
+            fetched += 1
+            logger.info("Fetched unadjusted grouped-daily for %s: %d tickers", d, len(records))
     return {"fetched": fetched, "skipped_existing": skipped, "empty_holiday_days": holidays}
 
 

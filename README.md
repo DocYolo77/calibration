@@ -25,8 +25,9 @@ verändert **nicht** `DocYolo77/yolo-dashboard`.
 10. [Tests](#tests)
 11. [Datenqualität & Sanity-Reports](#datenqualität--sanity-reports)
 12. [Bekannte Limitierungen](#bekannte-limitierungen)
-13. [Offene Fragen vor Phase 2](#offene-fragen-vor-phase-2)
-14. [Stop Condition (Phase 1)](#stop-condition-phase-1)
+13. [Geklärt: Split-Adjustierung der historischen Preise](#geklärt-split-adjustierung-der-historischen-preise-2026-08-12)
+14. [Offene Fragen vor Phase 2](#offene-fragen-vor-phase-2)
+15. [Stop Condition (Phase 1)](#stop-condition-phase-1)
 
 ---
 
@@ -293,29 +294,43 @@ Dezil vs. Momentum-Environment-Outcomes). Diese Reports optimieren
   schätzungsweise 10+ Stunden gestreckt (Hochrechnung aus dem
   Market-Cap-Enrichment-Schritt des Testlaufs).
 
+## Geklärt: Split-Adjustierung der historischen Preise (2026-08-12)
+
+Beim Explorieren der echten 2023-Testdaten fielen 46 Ticker mit unplausiblen
+ADJUSTED Close-Preisen auf (bis zu mehrere hundert Milliarden USD/Aktie,
+5.924 Zeilen ≈ 0,22%, davon 5.141 als eligible markiert — z.B. `MULN` am
+2023-06-15 mit $14,1 Mrd./Aktie statt real ca. $1–3). **Root Cause
+bestätigt**: der grouped-daily Endpoint wird mit `adjusted=true` abgefragt;
+das adjustiert historische Preise anhand ALLER Splits, die bis zum
+BUILD-Zeitpunkt (heute) bekannt sind, nicht nur bis zum jeweils historischen
+Datum — bei Penny Stocks mit mehreren Reverse-Splits zwischen 2023 und heute
+kumuliert sich das zu absurden absoluten Werten.
+
+**Analyse der tatsächlichen Auswirkung**: Jede aktuell implementierte
+Feature-/Outcome-Formel (ADR20, Returns, ATR%, ATR-Extension, Thrust,
+RS-Perzentile, Distanz-zu-MA, MFE/MAE, ATR-Multiples) ist ein **Verhältnis**
+innerhalb derselben Ticker-Serie — der fehlerhafte, aber pro Ticker
+*konstante* Skalierungsfaktor kürzt sich algebraisch heraus und ist daher
+**nicht** betroffen (empirisch bestätigt: MULNs ADR20 im Juni 2023 liegt
+bei plausiblen 12–20%, obwohl der absolute Preis absurd ist). Die einzige
+Größe, die **tatsächlich betroffen war**: `market_cap` (Preis × Shares
+Outstanding — kein Verhältnis, daher nicht skaleninvariant), inkl. der
+falschen Eligibility bei 5.141 Zeilen.
+
+**Fix implementiert**: `market_cap` verwendet jetzt einen separat via
+`adjusted=false` gefetchten UNADJUSTED Close-Preis
+(`data/fetch_raw.py::fetch_grouped_daily_unadjusted_range`,
+`universe/build_universe.py`), alle anderen Features bleiben unverändert auf
+der `adjusted=true`-Serie (korrekt und Standardpraxis für
+Verhältnis-basierte technische Analyse). Die Skaleninvarianz-Eigenschaft ist
+jetzt als Regressionstest abgesichert
+(`tests/test_scale_invariance.py`). Vollständig dokumentiert in
+`config/market_cap_methodology.yaml` (`why_unadjusted_close_specifically`).
+Ein `implausible_price_row_count`-Diagnose-Feld im Data-Quality-Report
+bleibt als Frühwarnsystem für künftige Builds erhalten.
+
 ## Offene Fragen vor Phase 2
 
-0. **Wahrscheinlich nicht-point-in-time Split-Adjustierung bei den Preisen selbst.**
-   Beim Explorieren der echten 2023-Testdaten (250 Handelstage, 2,66 Mio.
-   Zeilen) fielen 46 Ticker mit unplausiblen Close-Preisen auf (bis zu
-   mehrere hundert Milliarden USD/Aktie, 5.924 Zeilen ≈ 0,22%, davon 5.141
-   als eligible markiert — z.B. `MULN` am 2023-06-15 mit $14,1 Mrd./Aktie
-   statt real ca. $1–3). Plausible Ursache: der grouped-daily Endpoint wird
-   mit `adjusted=true` abgefragt; das adjustiert vermutlich rückwirkend
-   anhand ALLER Splits, die bis zum BUILD-Zeitpunkt (heute) bekannt sind,
-   nicht nur bis zum jeweils historischen Datum — bei Penny Stocks mit
-   mehreren Reverse-Splits zwischen 2023 und heute kumuliert sich das zu
-   absurden Werten. Das ist potenziell ein eigenständiges Point-in-Time-
-   Problem bei den PREISEN selbst (nicht nur beim Universe/den
-   Constituents, wo das Projekt bereits explizit adressiert). **Nicht
-   automatisch korrigiert** — ein `implausible_price_row_count`-Diagnose-
-   Feld (Schwelle: Close > $1.000.000, sicher über dem höchsten je
-   legitim gehandelten US-Preis von BRK.A ~$700k) wurde dem
-   Data-Quality-Report hinzugefügt, damit jeder Build das automatisch
-   aufdeckt. Die richtige Methodik (z.B. `adjusted=false` + eigene
-   point-in-time Split-Rekonstruktion, oder ein anderer Ansatz) ist eine
-   Research-/Engineering-Entscheidung, die vor Phase 2 getroffen werden
-   sollte.
 1. Ist die Monats-Cache-Granularität für Market-Cap-Enrichment
    (`compute_point_in_time_market_cap`) präzise genug, oder wird eine
    feingranularere (Filing-Datum-genaue) Rekonstruktion benötigt?

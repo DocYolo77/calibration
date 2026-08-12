@@ -18,7 +18,7 @@ import pandas as pd
 
 from yolo_calibration.config import load_universe_config
 from yolo_calibration.data.cache import cached_call
-from yolo_calibration.data.loaders import load_grouped_daily_range
+from yolo_calibration.data.loaders import load_grouped_daily_range, load_grouped_daily_unadjusted_range
 from yolo_calibration.data.massive_client import MassiveClient
 from yolo_calibration.data.storage import list_raw_grouped_daily_dates, read_raw_reference_tickers
 from yolo_calibration.features.technical import compute_adr20
@@ -71,7 +71,14 @@ def fetch_point_in_time_shares_outstanding(client: MassiveClient, ticker: str, b
 def compute_point_in_time_market_cap(client: MassiveClient, ticker: str, as_of_date: date,
                                       close_price: float) -> float | None:
     """market_cap = historical close * point-in-time weighted_shares_outstanding.
-    See config/market_cap_methodology.yaml. Convenience single-row wrapper;
+
+    `close_price` MUST be the UNADJUSTED (as-traded-that-day) close, not the
+    split-adjusted close used for technical features. Using the adjusted
+    close here would multiply a correct, point-in-time share count by a
+    price that has been back-adjusted for splits that hadn't happened yet
+    as of `as_of_date` — silently inflating market cap for tickers with
+    split events between `as_of_date` and the build date (see
+    config/market_cap_methodology.yaml). Convenience single-row wrapper;
     build_market_universe_daily uses the batched
     fetch_point_in_time_shares_outstanding path directly for performance
     (one lookup per unique (ticker, month) instead of per ticker-day)."""
@@ -94,6 +101,16 @@ def build_market_universe_daily(client: MassiveClient, start: date, end: date) -
             "Run `fetch-raw` / the historical build workflow first."
         )
     ohlcv = compute_adr20(ohlcv)
+
+    logger.info("Loading UNADJUSTED grouped daily OHLCV for point-in-time market cap...")
+    unadjusted = load_grouped_daily_unadjusted_range(start, end)
+    if unadjusted.empty:
+        raise RuntimeError(
+            "No raw UNADJUSTED grouped-daily checkpoints found for the requested range. "
+            "Run `fetch-raw` (now fetches both adjusted and unadjusted) or the historical "
+            "build workflow first."
+        )
+    ohlcv = ohlcv.merge(unadjusted, on=["date", "ticker"], how="left")
 
     logger.info("Loading point-in-time asset-type eligibility...")
     asset_type = _load_asset_type_ok(start, end)
@@ -125,7 +142,10 @@ def build_market_universe_daily(client: MassiveClient, start: date, end: date) -
     unique_ticker_months["shares_outstanding"] = shares_values
 
     candidates = candidates.merge(unique_ticker_months, on=["ticker", "bucket_month"], how="left")
-    candidates["market_cap"] = candidates["close"] * candidates["shares_outstanding"]
+    # market_cap MUST use the unadjusted (as-traded-that-day) close — see
+    # compute_point_in_time_market_cap docstring and
+    # config/market_cap_methodology.yaml.
+    candidates["market_cap"] = candidates["close_unadjusted"] * candidates["shares_outstanding"]
     candidates["market_cap_ok"] = candidates["market_cap"].fillna(0) >= mcap_min
 
     out = merged.merge(

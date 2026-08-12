@@ -46,28 +46,35 @@ def build_data_quality_report(
                 "Median eligible universe size is unexpectedly small (<50) — check filters/data coverage."
             )
 
-        # Diagnostic only — detects, does not correct. Found via manual data
-        # exploration of the 2023 test backfill: a small number of tickers
-        # (mostly micro-caps with several reverse splits) show close prices
-        # in the hundreds of billions of USD. Likely cause: the grouped-daily
-        # endpoint is queried with adjusted=true, which plausibly adjusts
-        # historical prices for ALL splits known as of the BUILD date rather
-        # than only splits known as of the historical date itself — a
-        # potential point-in-time leak in the price series (not just the
-        # universe membership). $1,000,000 is chosen as a threshold safely
-        # above the highest legitimate US common stock price on record
-        # (BRK.A, ~$700k) to minimize false positives. This is flagged, not
-        # fixed — the correct point-in-time price-adjustment methodology is
-        # an open research/engineering question (see README "Offene Fragen").
+        # Diagnostic only. Found via manual data exploration of the 2023
+        # test backfill: a small number of tickers (mostly micro-caps with
+        # several reverse splits) show ADJUSTED close prices in the hundreds
+        # of billions of USD (e.g. MULN ~$14B/share on 2023-06-15 vs. a real
+        # traded price of ~$1-3). Root cause (confirmed, see
+        # config/market_cap_methodology.yaml `why_unadjusted_close_specifically`):
+        # adjusted=true back-adjusts using ALL splits known as of the BUILD
+        # date, not just the historical date. `market_cap` has already been
+        # fixed to use the separately-fetched UNADJUSTED close instead (see
+        # universe/build_universe.py) and is unaffected by this. Every other
+        # feature/outcome is a ratio computed within one ticker's own
+        # (uniformly scaled) series and is provably scale-invariant — see
+        # tests/test_scale_invariance.py. This diagnostic exists so an
+        # anomalously-scaled `close`/`high`/`low`/`atr14` column (still on
+        # the adjusted-to-build-time basis, by design, for ratio features)
+        # is never mistaken for a literal historical trade price.
+        # $1,000,000 is chosen as a threshold safely above the highest
+        # legitimate US common stock price on record (BRK.A, ~$700k).
         implausible = mu[mu["close"] > 1_000_000]
         report["implausible_price_row_count"] = int(len(implausible))
         report["implausible_price_ticker_count"] = int(implausible["ticker"].nunique())
         if not implausible.empty:
             report["warnings"].append(
-                f"{len(implausible)} row(s) across {implausible['ticker'].nunique()} ticker(s) have a "
-                f"close price above $1,000,000 — likely a non-point-in-time split adjustment artifact "
-                f"(adjusted=true probably applies splits known as of the BUILD date, not the historical "
-                f"date). NOT auto-corrected; flagged as an open question for Phase 2. Example tickers: "
+                f"{len(implausible)} row(s) across {implausible['ticker'].nunique()} ticker(s) have an "
+                f"ADJUSTED close price above $1,000,000 — expected artifact of adjusted=true using "
+                f"build-time split knowledge (see config/market_cap_methodology.yaml). market_cap already "
+                f"uses the unadjusted close and is unaffected; all other features are scale-invariant "
+                f"(tests/test_scale_invariance.py). Do not read `close`/`high`/`low`/`atr14` as literal "
+                f"historical prices for these tickers. Example tickers: "
                 f"{sorted(implausible['ticker'].unique())[:10]}"
             )
     else:

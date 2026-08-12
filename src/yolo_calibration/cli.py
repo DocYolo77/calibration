@@ -12,6 +12,7 @@ from datetime import date, datetime
 from yolo_calibration.config import make_build_metadata
 from yolo_calibration.data.fetch_raw import (
     fetch_grouped_daily_range,
+    fetch_grouped_daily_unadjusted_range,
     fetch_qqq_constituents_range,
     fetch_reference_tickers_range,
 )
@@ -46,7 +47,9 @@ def _add_date_range_args(p: argparse.ArgumentParser) -> None:
 def cmd_fetch_raw(args: argparse.Namespace) -> int:
     client = MassiveClient()
     result = fetch_grouped_daily_range(client, args.start, args.end, force=args.force)
-    logger.info("Grouped daily fetch: %s", result)
+    logger.info("Grouped daily fetch (adjusted): %s", result)
+    result_unadj = fetch_grouped_daily_unadjusted_range(client, args.start, args.end, force=args.force)
+    logger.info("Grouped daily fetch (unadjusted, for point-in-time market cap): %s", result_unadj)
     result2 = fetch_reference_tickers_range(client, args.start, args.end, force=args.force)
     logger.info("Reference tickers fetch: %s", result2)
     return 0
@@ -63,6 +66,7 @@ def cmd_build_universe(args: argparse.Namespace) -> int:
     client = MassiveClient()
     if not args.no_fetch:
         fetch_grouped_daily_range(client, args.start, args.end)
+        fetch_grouped_daily_unadjusted_range(client, args.start, args.end)
         fetch_reference_tickers_range(client, args.start, args.end)
     df = build_market_universe_daily(client, args.start, args.end)
     write_processed_by_year("market_universe_daily", df)

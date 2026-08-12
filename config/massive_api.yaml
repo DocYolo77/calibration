@@ -23,7 +23,14 @@ endpoints:
     params:
       adjusted: true
       include_otc: false
-    purpose: "Bulk daily OHLCV for ALL US stocks on one date in a single call (avoids per-ticker requests)."
+    purpose: >
+      Bulk daily OHLCV for ALL US stocks on one date in a single call
+      (avoids per-ticker requests). Fetched TWICE per day, once with
+      adjusted=true (basis for all technical features/outcomes — see
+      data/fetch_raw.py::fetch_grouped_daily_range) and once with
+      adjusted=false (basis for market_cap only — see
+      fetch_grouped_daily_unadjusted_range and
+      config/market_cap_methodology.yaml `why_unadjusted_close_specifically`).
 
   reference_tickers:
     path: "/v3/reference/tickers"
