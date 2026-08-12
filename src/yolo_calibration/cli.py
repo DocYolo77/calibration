@@ -96,8 +96,11 @@ def cmd_build_stock_outcomes(args: argparse.Namespace) -> int:
 
 
 def cmd_build_qqq_health(args: argparse.Namespace) -> int:
-    client = MassiveClient()
+    # build_qqq_health_daily() only reads already-fetched raw checkpoints —
+    # it never makes a live API call — so a MassiveClient (and therefore
+    # MASSIVE_API_KEY) is only needed here when we're actually fetching.
     if not args.no_fetch:
+        client = MassiveClient()
         fetch_grouped_daily_range(client, args.start, args.end)
         fetch_qqq_constituents_range(client, args.start, args.end)
     try:
