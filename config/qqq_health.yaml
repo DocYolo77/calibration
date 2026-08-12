@@ -1,0 +1,64 @@
+# QQQ Health research-track feature definitions.
+# NO health STATE labels or thresholds (HEALTHY/DETERIORATING/etc.) are
+# defined here — Phase 1 produces only raw features + outcomes. See
+# project spec sections 9-13.
+
+schema_version: 1
+
+constituents:
+  index_ticker: "QQQ"
+  # Preferred point-in-time source order (spec section 10):
+  #   A) Massive ETF-constituents endpoint (composite_ticker=QQQ, effective_date=D)
+  #   B) verified historical NDX-100 constituent source (not currently wired up)
+  #   C) hard stop — never silently fall back to today's holdings.
+  source_priority: ["massive_etf_constituents", "verified_ndx100_source"]
+  massive_etf_constituents:
+    composite_ticker: "QQQ"
+    earliest_known_coverage: "2017-04-03"
+  on_missing_data: "raise"   # never silently substitute current constituents
+  min_required_components_for_valid_day: 50
+
+breadth:
+  rana_scale: 1000
+  mco:
+    ema_short_days: 19
+    ema_long_days: 39
+    ema_adjust: false
+    zscore_rolling_window_days: 200
+    zscore_min_periods: 80
+  mcsi:
+    # Cumulative sum of MCO. Warmup behavior must mirror the existing YOLO
+    # dashboard implementation (see src/yolo_calibration/qqq_health/breadth.py
+    # docstring for the exact recurrence and warmup rule used).
+    seed_value: 0.0
+    zscore_rolling_window_days: 200
+    zscore_min_periods: 80
+    sma_smooth_days: 10
+  pct_above_ma:
+    sma5: 5
+    ema10: 10
+    sma20: 20
+    ema21: 21
+    sma50: 50
+    sma200: 200
+    ema_adjust: false
+  high_low_oscillator:
+    lookback_days: 20
+  change_windows_days: [1, 3, 5]
+
+qqq_price_structure:
+  ema_fast_days: 10
+  ema_slow_days: 20
+  sma_trend_days: 50
+  sma_long_days: 200
+  ema_adjust: false
+  # ATR fields reuse the canonical ATR definition in config/features.yaml
+  atr_window_days: 14
+
+outcome_horizons_days: [5, 10, 20]
+
+momentum_environment_outcomes:
+  # Descriptive RS buckets only — NOT a leader definition (spec section 12).
+  rs_buckets: [80, 90, 95]
+  mfe_pct_thresholds: [5.0, 10.0]
+  mfe_atr_multiples: [2.0, 3.0]

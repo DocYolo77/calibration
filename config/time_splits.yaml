@@ -1,0 +1,52 @@
+# Central, immutable definition of the research time splits.
+#
+# These boundaries are fixed by the project specification and MUST NOT be
+# changed once calibration work begins. See README.md section "Time Splits".
+#
+# Rules encoded here (enforced in code, not just convention):
+#   - calibration: may be used freely for development and threshold calibration.
+#   - validation: read-only once a rule is frozen; never re-optimized against it.
+#   - out_of_sample: pure test period, evaluated once, never used to tune anything.
+#   - No feature or outcome for a given date may use information dated after
+#     that date (see tests/test_no_lookahead.py).
+
+schema_version: 1
+
+splits:
+  calibration:
+    start: "2023-01-01"
+    end: "2024-12-31"
+    description: >
+      Development and calibration period. Rule thresholds (leader definitions,
+      thrust cutoffs, QQQ health states, etc.) may be explored and chosen here
+      in later phases. Not used in Phase 1.
+
+  validation:
+    start: "2025-01-01"
+    end: "2025-12-31"
+    description: >
+      Out-of-calibration validation period. Once a rule is frozen after
+      calibration, it is evaluated here without modification. No threshold
+      may be re-tuned based on validation-period results.
+
+  out_of_sample:
+    start: "2026-01-01"
+    end: null  # resolved at build time to the latest fully-available trading day
+    description: >
+      Pure out-of-sample test period. Evaluated once, using rules already
+      frozen from calibration + validation. Never used for tuning.
+
+# Global build boundary: the earliest date for which point-in-time market
+# data is fetched. Kept distinct from calibration.start because indicators
+# such as SMA200 / MCSI (200-day rolling stats, 80-day warmup) need lookback
+# history strictly BEFORE 2023-01-01 to produce valid values at the start of
+# the calibration window without borrowing future data.
+data_fetch:
+  history_buffer_start: "2022-01-01"
+  note: >
+    Data from history_buffer_start through calibration.start is fetched and
+    used only to warm up rolling-window features (SMA200, ATR14, MCO/MCSI
+    rolling z-scores, etc.). Rows dated before calibration.start are retained
+    in the feature tables (marked via the `in_calibration_window` derived
+    field at query time) but are never presented as "signal days" for
+    threshold calibration.

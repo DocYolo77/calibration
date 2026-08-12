@@ -1,0 +1,61 @@
+# Daily YOLO Research Universe eligibility rules.
+# These are ELIGIBILITY filters only — NOT trading signal thresholds.
+# Do not add leader/momentum thresholds here; see features.yaml / thresholds
+# are explicitly deferred to Phase 2 per project specification.
+
+schema_version: 1
+
+asset_type:
+  market: "stocks"
+  locale: "us"
+  # Included Massive/Polygon ticker `type` codes (common stock only).
+  # Resolved dynamically at build time against /v3/reference/tickers/types
+  # (asset_class=stocks, locale=us) and cached; this list is the intended
+  # allow-list and is validated against that reference at build time.
+  include_types:
+    - "CS"   # Common Stock
+  # Explicitly excluded even if they slip through include_types resolution.
+  exclude_types:
+    - "ETF"
+    - "ETN"
+    - "ETS"
+    - "ETV"
+    - "FUND"
+    - "PFD"    # Preferred stock
+    - "WARRANT"
+    - "RIGHT"
+    - "UNIT"
+    - "INDEX"
+    - "ADRC"   # ADRs excluded implicitly by requiring plain "CS"; listed for clarity
+    - "ADRP"
+    - "ADRW"
+    - "ADRR"
+  exclude_otc: true
+
+adr20:
+  # ADR20 = mean over the last 20 COMPLETED trading days of
+  #   (High / Low - 1) * 100
+  # The current/in-progress trading day is never included until its daily
+  # bar is complete (see data_fetch cutover rules in massive_api.yaml).
+  window_days: 20
+  min_pct: 4.0
+
+market_cap:
+  min_usd: 1_000_000_000
+  # See config/market_cap_methodology.yaml for how point-in-time market cap
+  # is approximated.
+
+filter_order:
+  # Order is fixed for cost reasons: cheap filters first, expensive
+  # (market-cap enrichment) filters last. This does NOT change the
+  # resulting eligible set, only the number of API calls needed to compute it.
+  - "asset_type"
+  - "adr20"
+  - "market_cap"
+
+survivorship_bias:
+  # A ticker's presence in the universe on a historical date must NOT depend
+  # on whether it is still active/listed today. Delisted tickers are kept in
+  # reference data and considered for historical eligibility on dates before
+  # their delisting.
+  drop_inactive_tickers_from_history: false

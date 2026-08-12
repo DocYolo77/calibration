@@ -1,0 +1,65 @@
+# Canonical feature definitions. These are DEFINITIONS, not trading
+# thresholds. No leader/fresh-leader/constructive-reset/extended threshold
+# belongs in this file (see config/README_PHASE1_SCOPE.md).
+
+schema_version: 1
+
+returns:
+  horizons_days:
+    return_1d: 1
+    return_5d: 5
+    return_21d: 21
+
+moving_averages:
+  ema_fast_days: 10   # ema10
+  ema_slow_days: 20   # ema20
+  sma_trend_days: 50  # sma50
+  ema_adjust: false   # pandas .ewm(adjust=False), matches existing YOLO dashboard convention
+
+atr:
+  # Canonical ATR definition — DO NOT MODIFY (project spec section 5).
+  window_days: 14
+  smoothing: "simple_arithmetic_mean"   # explicitly NOT Wilder smoothing
+  true_range_formula: >
+    TR = max(High - Low, abs(High - PrevClose), abs(Low - PrevClose))
+  atr_pct_formula: "ATR14 / Close * 100"
+  gain_from_sma50_formula: "(Close - SMA50) / SMA50 * 100"
+  atr_extension_formula: "gain_from_sma50_pct / atr_pct"
+
+relative_strength:
+  # RS is a daily point-in-time percentile rank (0-100) computed ONLY
+  # against tickers that are ELIGIBLE (per config/universe.yaml) on that
+  # same trading date. No leader threshold is defined here.
+  horizons_days:
+    rs_percentile_1d: 1
+    rs_percentile_1w: 5
+    rs_percentile_1m: 21
+  percentile_method: "rank_pct"   # pandas .rank(pct=True) * 100, ties averaged
+  universe: "eligible_only"
+
+thrust:
+  # Existing YOLO thrust logic: EMA(short) - EMA(long) of the daily percentage
+  # return series, per horizon. No 80/85/90-style threshold defined here.
+  ema_adjust: false
+  horizons:
+    thrust_1d:
+      ema_short_days: 2
+      ema_long_days: 5
+    thrust_1w:
+      ema_short_days: 5
+      ema_long_days: 15
+    thrust_1m:
+      ema_short_days: 10
+      ema_long_days: 25
+  percentile_method: "rank_pct"
+  universe: "eligible_only"
+
+outcome_horizons_days: [5, 10, 20]
+
+outcome_thresholds:
+  # These describe WHICH descriptive outcome flags to compute (e.g. "did the
+  # stock reach +5% at any point"), not trading rule thresholds to be
+  # calibrated. They mirror the fixed list in the project specification.
+  pct_moves: [5.0, 10.0]
+  atr_multiples: [2.0, 3.0]
+  new_high_lookback_days: 20

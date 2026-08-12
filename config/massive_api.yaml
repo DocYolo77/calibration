@@ -1,0 +1,60 @@
+# Massive (formerly Polygon.io) API configuration.
+#
+# The API key itself is NEVER stored here or anywhere in the repo. It is
+# read exclusively from the MASSIVE_API_KEY environment variable at
+# runtime (see src/yolo_calibration/data/massive_client.py). In CI it is
+# injected from the GitHub Actions secret ${{ secrets.MASSIVE_API_KEY }}.
+
+schema_version: 1
+
+base_url: "https://api.massive.com"
+# api.polygon.io remains supported as a legacy alias post-rebrand; kept only
+# as a documented fallback, not used by default.
+legacy_base_url: "https://api.polygon.io"
+
+auth:
+  mechanism: "bearer_header"   # Authorization: Bearer <MASSIVE_API_KEY>
+  env_var: "MASSIVE_API_KEY"
+
+endpoints:
+  grouped_daily:
+    path: "/v2/aggs/grouped/locale/us/market/stocks/{date}"
+    method: "GET"
+    params:
+      adjusted: true
+      include_otc: false
+    purpose: "Bulk daily OHLCV for ALL US stocks on one date in a single call (avoids per-ticker requests)."
+
+  reference_tickers:
+    path: "/v3/reference/tickers"
+    method: "GET"
+    purpose: "Point-in-time ticker list + asset type, via `date` and `active` params."
+
+  ticker_types:
+    path: "/v3/reference/tickers/types"
+    method: "GET"
+    purpose: "Resolve valid asset-type codes (used to validate config/universe.yaml include/exclude lists)."
+
+  ticker_overview:
+    path: "/v3/reference/tickers/{ticker}"
+    method: "GET"
+    purpose: "Point-in-time shares outstanding (via `date` param) for market cap approximation. See config/market_cap_methodology.yaml."
+
+  etf_constituents:
+    path: "/etf-global/v1/constituents"
+    method: "GET"
+    purpose: "Point-in-time QQQ holdings via composite_ticker + effective_date. Primary source for QQQ health breadth universe."
+
+http:
+  timeout_seconds: 30
+  max_retries: 5
+  backoff_factor_seconds: 2.0
+  retry_on_status: [429, 500, 502, 503, 504]
+  requests_per_minute_soft_limit: 90  # client-side throttle; adjust per plan tier
+
+caching:
+  reference_data_dir: "data/cache/reference"
+  ttl_days:
+    ticker_overview: 30
+    ticker_types: 90
+    reference_tickers_snapshot: 7

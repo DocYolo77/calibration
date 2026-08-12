@@ -1,0 +1,105 @@
+name: Historical Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD)"
+        required: true
+        default: "2022-01-01"
+      end_date:
+        description: "End date (YYYY-MM-DD)"
+        required: true
+      rebuild:
+        description: "Force re-fetch of already-checkpointed raw data"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  historical-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: pip install -e .
+
+      # Raw checkpoint files + reference-data cache are restored here so a
+      # re-run of this workflow (e.g. after a timeout or transient API
+      # failure) resumes instead of re-fetching already-downloaded days
+      # (spec section 17: "Bei Abbruch soll nicht alles erneut geladen
+      # werden müssen.").
+      - name: Restore raw data + reference cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw
+            data/cache
+          key: yolo-raw-${{ inputs.start_date }}-${{ inputs.end_date }}-${{ github.run_id }}
+          restore-keys: |
+            yolo-raw-${{ inputs.start_date }}-${{ inputs.end_date }}-
+
+      - name: Fetch raw grouped-daily + reference tickers
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.rebuild }}" = "true" ]; then FORCE_FLAG="--force"; fi
+          python -m yolo_calibration fetch-raw --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" $FORCE_FLAG
+
+      - name: Fetch QQQ point-in-time constituents
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.rebuild }}" = "true" ]; then FORCE_FLAG="--force"; fi
+          python -m yolo_calibration fetch-qqq-constituents --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" $FORCE_FLAG || \
+          echo "::warning::QQQ constituent fetch failed or incomplete — QQQ health track may be unavailable (spec section 10 hard-stop behavior)."
+
+      - name: Save raw checkpoints to cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/raw
+            data/cache
+          key: yolo-raw-${{ inputs.start_date }}-${{ inputs.end_date }}-${{ github.run_id }}
+
+      - name: Build market universe
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: python -m yolo_calibration build-universe --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" --no-fetch
+
+      - name: Build stock features
+        run: python -m yolo_calibration build-stock-features --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
+
+      - name: Build stock outcomes
+        run: python -m yolo_calibration build-stock-outcomes --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
+
+      - name: Build QQQ health (non-fatal if unavailable)
+        run: |
+          python -m yolo_calibration build-qqq-health --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" --no-fetch || \
+          echo "::warning::QQQ health build did not complete — see reports/data_quality_report.md for the reason."
+
+      - name: Build QQQ outcomes (best-effort)
+        run: python -m yolo_calibration build-qqq-outcomes --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" || true
+
+      - name: Verify + generate reports
+        run: python -m yolo_calibration verify --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
+
+      - name: Upload processed data as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yolo-calibration-processed-${{ inputs.start_date }}-${{ inputs.end_date }}
+          path: |
+            data/processed
+            reports
+          retention-days: 30
