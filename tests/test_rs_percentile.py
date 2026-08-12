@@ -12,6 +12,9 @@ def test_rs_percentile_only_ranks_within_eligible_universe():
         "return_1d": [10.0, 5.0, 1.0, -50.0],
         "return_5d": [10.0, 5.0, 1.0, -50.0],
         "return_21d": [10.0, 5.0, 1.0, -50.0],
+        "return_3m": [10.0, 5.0, 1.0, -50.0],
+        "return_6m": [10.0, 5.0, 1.0, -50.0],
+        "return_12m": [10.0, 5.0, 1.0, -50.0],
         # D has the worst return but is NOT eligible -> must be excluded
         # from the ranking pool entirely (not just given a low percentile).
         "eligible": [True, True, True, False],
@@ -41,6 +44,9 @@ def test_eligible_flag_is_precondition_not_derived_from_rs():
         "return_1d": [10.0, 5.0, 1.0],
         "return_5d": [10.0, 5.0, 1.0],
         "return_21d": [10.0, 5.0, 1.0],
+        "return_3m": [10.0, 5.0, 1.0],
+        "return_6m": [10.0, 5.0, 1.0],
+        "return_12m": [10.0, 5.0, 1.0],
         "eligible": [True, True, False],
     })
     mutated = base.copy()
@@ -63,6 +69,9 @@ def test_rs_percentile_computed_per_date_independently():
         "return_1d": [1.0, 2.0, 2.0, 1.0],
         "return_5d": [1.0, 2.0, 2.0, 1.0],
         "return_21d": [1.0, 2.0, 2.0, 1.0],
+        "return_3m": [1.0, 2.0, 2.0, 1.0],
+        "return_6m": [1.0, 2.0, 2.0, 1.0],
+        "return_12m": [1.0, 2.0, 2.0, 1.0],
         "eligible": [True, True, True, True],
     })
     out = add_relative_strength_percentiles(df)

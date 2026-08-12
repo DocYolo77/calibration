@@ -18,6 +18,8 @@ from yolo_calibration.features.technical import (
     add_moving_averages,
     add_relative_strength_percentiles,
     add_returns,
+    add_sma50_persistence,
+    add_sma50_slope,
     add_thrust,
     add_thrust_percentiles,
     add_true_range_atr,
@@ -39,6 +41,8 @@ def build_stock_features_daily(market_universe_daily: pd.DataFrame, start: date,
     df = add_true_range_atr(df)
     df = add_moving_averages(df)
     df = add_atr_extension(df)
+    df = add_sma50_slope(df)
+    df = add_sma50_persistence(df)
 
     df = df.merge(
         market_universe_daily[["date", "ticker", "eligible", "market_cap", "adr20"]],
@@ -57,12 +61,13 @@ def build_stock_features_daily(market_universe_daily: pd.DataFrame, start: date,
     cols = [
         "date", "ticker", "eligible", "market_cap", "adr20",
         "close", "high", "low",
-        "return_1d", "return_5d", "return_21d",
+        "return_1d", "return_5d", "return_21d", "return_3m", "return_6m", "return_12m",
         "rs_percentile_1d", "rs_percentile_1w", "rs_percentile_1m",
+        "rs_percentile_3m", "rs_percentile_6m", "rs_percentile_12m",
         "thrust_1d", "thrust_1w", "thrust_1m",
         "thrust_percentile_1d", "thrust_percentile_1w", "thrust_percentile_1m",
         "ema10", "ema20", "distance_ema10_pct", "distance_ema20_pct",
-        "sma50",
+        "sma50", "sma50_slope_pct", "sma50_persistence_days",
         "atr14", "atr_pct", "atr_extension",
     ]
     for col in cols:

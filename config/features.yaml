@@ -9,12 +9,30 @@ returns:
     return_1d: 1
     return_5d: 5
     return_21d: 21
+    return_3m: 63    # ~63 trading days
+    return_6m: 126   # ~126 trading days
+    return_12m: 252  # ~252 trading days
 
 moving_averages:
   ema_fast_days: 10   # ema10
   ema_slow_days: 20   # ema20
   sma_trend_days: 50  # sma50
   ema_adjust: false   # pandas .ewm(adjust=False), matches existing YOLO dashboard convention
+
+sma50_slope:
+  # Definition: percent change of SMA50 over its own trailing N-day
+  # lookback — sma50_slope_pct(t) = (SMA50[t] - SMA50[t-N]) / SMA50[t-N] * 100.
+  # A feature DEFINITION (like ATR/EMA above), not a trading threshold —
+  # no "trending up/down" cutoff is defined here.
+  lookback_days: 5
+
+sma50_persistence:
+  # Definition: signed streak length in trading days of Close being
+  # continuously above (positive) or below (negative) SMA50, ending on
+  # the current row. Resets to +-1 the day the relationship flips; NaN
+  # while SMA50 itself is still in its warmup window. No threshold
+  # ("persistent" cutoff) is defined here — raw streak length only.
+  # No extra parameters — reuses moving_averages.sma_trend_days.
 
 atr:
   # Canonical ATR definition — DO NOT MODIFY (project spec section 5).
@@ -34,6 +52,9 @@ relative_strength:
     rs_percentile_1d: 1
     rs_percentile_1w: 5
     rs_percentile_1m: 21
+    rs_percentile_3m: 63
+    rs_percentile_6m: 126
+    rs_percentile_12m: 252
   percentile_method: "rank_pct"   # pandas .rank(pct=True) * 100, ties averaged
   universe: "eligible_only"
 

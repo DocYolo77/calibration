@@ -155,14 +155,26 @@ Kanonische Formeln (unveränderlich, `config/features.yaml`):
 - **ATR Extension** = `((Close-SMA50)/SMA50*100) / ATR%`
 - **ADR20** = Mittelwert der letzten 20 abgeschlossenen Handelstage von
   `(High/Low - 1) * 100`
-- **RS-Perzentile** (1D/1W/1M): `rank(pct=True)*100`, **ausschließlich**
-  innerhalb des an diesem Tag eligible Universe
+- **RS-Perzentile** (1D/1W/1M/**3M/6M/12M**, Fenster 1/5/21/**63/126/252**
+  Handelstage): `rank(pct=True)*100`, **ausschließlich** innerhalb des an
+  diesem Tag eligible Universe
 - **Thrust** = `EMA(short) - EMA(long)` der täglichen Return-Serie
   (1D: 2/5, 1W: 5/15, 1M: 10/25 Tage, `adjust=False`), plus Perzentilrang
   im eligible Universe
+- **SMA50-Slope** (`sma50_slope_pct`) = prozentuale Veränderung des SMA50
+  gegenüber sich selbst vor `lookback_days` (Default 5) Handelstagen:
+  `(SMA50[t] - SMA50[t-N]) / SMA50[t-N] * 100`
+- **SMA50-Persistence** (`sma50_persistence_days`) = vorzeichenbehaftete
+  Streak-Länge in Handelstagen: wie viele Tage in Folge (bis einschließlich
+  heute) steht Close kontinuierlich über (positiv) bzw. unter (negativ)
+  SMA50. Reset auf ±1 am Tag des Wechsels; NaN während des SMA50-Warmups.
 - **Outcome-Horizonte**: 5/10/20 Handelstage; MFE/MAE als Fensterextrema
   (nicht nur Endpunkt); ATR-Multiples nutzen die **Signal-Tag-ATR**, nie
   eine zukünftige ATR
+
+SMA50-Slope und SMA50-Persistence sind **Feature-Definitionen** (wie ATR/EMA
+oben), keine Trading-Schwellen — es wird kein "trending"/"persistent ab X
+Tagen"-Cutoff festgelegt, nur der rohe Wert berechnet.
 
 Alle Formeln sind 1:1 als reine, getestete Funktionen in
 `features/technical.py` und `outcomes/build_outcomes.py` implementiert.
@@ -237,20 +249,27 @@ setzt bei den zuletzt gespeicherten Rohdaten fort statt neu zu laden.
 ## Tests
 
 ```bash
-pytest -q          # 36 Tests, ausschließlich synthetische Daten, kein Netzwerkzugriff
+pytest -q          # 45 Tests, ausschließlich synthetische Daten, kein Netzwerkzugriff
 ```
 
 Abgedeckt: ADR20-Exaktheit, True Range/ATR14 (kein Wilder-Smoothing),
-ATR Extension, EMA (`adjust=False`), RS-Perzentile (nur eligible Universe,
-tagesweise unabhängig), Thrust + Thrust-Perzentile, MFE/MAE/Forward-Return
-(inkl. Window-Extrema statt nur Endpunkt), kein Future-Leakage (Mutations-
-und Truncation-Äquivalenztests), "eligible vor RS-Ranking", delistete
-Ticker werden nicht wegen heutiger Inaktivität entfernt, OTC-Ausschluss,
-A/D + RANA, MCO (EMA19/39, `adjust=False`), MCO-Z (200T-Fenster,
-Min-Periods 80), MCSI (Cumsum), MCSI-Z, %>MA, Point-in-time
-QQQ-Membership (inkl. des von der Spezifikation explizit geforderten
-Tests, der bei einer statischen heutigen Komponentenliste fehlschlägt),
-harter Stop bei fehlenden QQQ-Daten, sowie ein End-to-End-Integrationstest
+ATR Extension, EMA (`adjust=False`), RS-Perzentile inkl. 3M/6M/12M (nur
+eligible Universe, tagesweise unabhängig), SMA50-Slope-Formel,
+SMA50-Persistence (Streak-Zählung inkl. Flip- und Ticker-Grenzfällen),
+Thrust + Thrust-Perzentile, MFE/MAE/Forward-Return (inkl. Window-Extrema
+statt nur Endpunkt), kein Future-Leakage (Mutations- und
+Truncation-Äquivalenztests, jetzt auch für SMA50-Slope/Persistence),
+"eligible vor RS-Ranking", delistete Ticker werden nicht wegen heutiger
+Inaktivität entfernt, OTC-Ausschluss, A/D + RANA, MCO (EMA19/39,
+`adjust=False`), MCO-Z (200T-Fenster, Min-Periods 80), MCSI (Cumsum),
+MCSI-Z, %>MA, Point-in-time QQQ-Membership (inkl. des von der
+Spezifikation explizit geforderten Tests, der bei einer statischen
+heutigen Komponentenliste fehlschlägt), harter Stop bei fehlenden
+QQQ-Daten, **Skaleninvarianz der Ratio-Features gegenüber dem
+Split-Adjustierungs-Faktor** (`test_scale_invariance.py` — market_cap
+nutzt nachweislich den unadjustierten Preis, alle anderen Features sind
+beweisbar unabhängig vom Skalierungsfaktor), Market-Cap-Enrichment-Batching
+nach Ticker-Monat statt Ticker-Tag, sowie ein End-to-End-Integrationstest
 der gesamten Pipeline (raw → universe → features → outcomes) mit
 synthetischen Daten und gestubtem API-Client.
 

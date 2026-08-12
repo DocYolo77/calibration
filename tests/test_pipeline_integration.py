@@ -85,7 +85,8 @@ def test_full_pipeline_wiring(isolated_storage, stub_client):
 
     features = build_stock_features_daily(universe, start, end)
     assert not features.empty
-    for col in ["rs_percentile_1d", "thrust_1d", "atr14", "atr_extension"]:
+    for col in ["rs_percentile_1d", "rs_percentile_3m", "rs_percentile_6m", "rs_percentile_12m",
+                "thrust_1d", "atr14", "atr_extension", "sma50_slope_pct", "sma50_persistence_days"]:
         assert col in features.columns
 
     outcomes = build_stock_outcomes_daily(features)

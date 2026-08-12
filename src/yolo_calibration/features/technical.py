@@ -67,6 +67,50 @@ def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def add_sma50_slope(df: pd.DataFrame) -> pd.DataFrame:
+    """sma50_slope_pct = % change of SMA50 over its own trailing N-day
+    lookback (config/features.yaml `sma50_slope.lookback_days`). Requires
+    `sma50` already present (see add_moving_averages). NaN until both the
+    SMA50 warmup AND the slope lookback are satisfied."""
+    cfg = load_features_config()["sma50_slope"]
+    lookback = cfg["lookback_days"]
+    out = df.sort_values(["ticker", "date"]).copy()
+    sma50_lag = out.groupby("ticker", sort=False)["sma50"].shift(lookback)
+    out["sma50_slope_pct"] = (out["sma50"] - sma50_lag) / sma50_lag * 100.0
+    return out
+
+
+def add_sma50_persistence(df: pd.DataFrame) -> pd.DataFrame:
+    """sma50_persistence_days: signed streak length (trading days, ending
+    on the current row) of Close being continuously above (positive) or
+    below (negative) SMA50. +1/-1 the day the relationship flips; NaN
+    while SMA50 itself is still in its warmup window. Requires `sma50`
+    already present (see add_moving_averages). Vectorized via a
+    segment-id trick (no per-row Python loop): a new "segment" starts at
+    a ticker boundary, an above/below flip, or a warmup-validity change;
+    the streak length is the row's position within its segment."""
+    out = df.sort_values(["ticker", "date"]).reset_index(drop=True).copy()
+    valid = out["sma50"].notna()
+    above = out["close"] > out["sma50"]
+
+    prev_ticker = out["ticker"].shift()
+    # .shift() on a bool Series upcasts to object dtype (to hold the
+    # leading NaN); ~ on an object-dtype Series of Python bools applies
+    # bitwise invert per element (~True == -2, ~False == -1) instead of
+    # logical NOT — both are truthy, silently breaking the flip check.
+    # .astype(bool) after fillna forces a real boolean dtype so ~ behaves.
+    prev_above = above.shift().fillna(False).astype(bool)
+    prev_valid = valid.shift().fillna(False).astype(bool)
+    new_segment = (out["ticker"] != prev_ticker) | (above != prev_above) | (~valid) | (~prev_valid)
+    segment_id = new_segment.cumsum()
+
+    streak_len = out.groupby(segment_id).cumcount() + 1
+    persistence = np.where(above, streak_len, -streak_len).astype(float)
+    persistence[~valid.to_numpy()] = np.nan
+    out["sma50_persistence_days"] = persistence
+    return out
+
+
 def add_atr_extension(df: pd.DataFrame) -> pd.DataFrame:
     """Requires sma50 and atr_pct already present (see add_moving_averages,
     add_true_range_atr). gain_from_sma50_pct and atr_extension per
@@ -104,6 +148,9 @@ def add_relative_strength_percentiles(df: pd.DataFrame, eligible_col: str = "eli
         "rs_percentile_1d": "return_1d",
         "rs_percentile_1w": "return_5d",
         "rs_percentile_1m": "return_21d",
+        "rs_percentile_3m": "return_3m",
+        "rs_percentile_6m": "return_6m",
+        "rs_percentile_12m": "return_12m",
     }
     out = df.copy()
     for pct_col in cfg:

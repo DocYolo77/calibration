@@ -6,6 +6,8 @@ import pandas as pd
 from yolo_calibration.features.technical import (
     add_moving_averages,
     add_returns,
+    add_sma50_persistence,
+    add_sma50_slope,
     add_thrust,
     add_true_range_atr,
 )
@@ -15,6 +17,8 @@ def _build(df: pd.DataFrame) -> pd.DataFrame:
     out = add_returns(df)
     out = add_true_range_atr(out)
     out = add_moving_averages(out)
+    out = add_sma50_slope(out)
+    out = add_sma50_persistence(out)
     out = add_thrust(out)
     return out
 
@@ -38,8 +42,9 @@ def test_mutating_future_rows_does_not_change_past_feature_values():
     out_base = _build(df)
     out_mut = _build(mutated)
 
-    check_cols = ["return_1d", "return_5d", "return_21d", "atr14", "atr_pct",
-                  "ema10", "ema20", "sma50", "thrust_1d", "thrust_1w", "thrust_1m"]
+    check_cols = ["return_1d", "return_5d", "return_21d", "return_3m", "return_6m", "return_12m",
+                  "atr14", "atr_pct", "ema10", "ema20", "sma50", "sma50_slope_pct",
+                  "sma50_persistence_days", "thrust_1d", "thrust_1w", "thrust_1m"]
     for col in check_cols:
         pd.testing.assert_series_equal(
             out_base[col].iloc[:49].reset_index(drop=True),
@@ -61,7 +66,7 @@ def test_outcome_columns_are_the_only_place_future_data_is_used():
     full = _build(df)
     truncated = _build(df.iloc[:25].copy())
 
-    check_cols = ["atr14", "ema10", "ema20", "thrust_1d"]
+    check_cols = ["atr14", "ema10", "ema20", "sma50_slope_pct", "sma50_persistence_days", "thrust_1d"]
     for col in check_cols:
         pd.testing.assert_series_equal(
             full[col].iloc[:25].reset_index(drop=True),
