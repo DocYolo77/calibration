@@ -9,10 +9,25 @@ horizon H in {5, 10, 20}, e.g. `mfe_pct_5d`, `reached_2atr_20d`.
 Tie-break convention (documented, not a trading decision): for
 `reached_plus_X_before_minus_X`, if both the +X% and -X% thresholds are
 touched on the SAME forward trading day, the decline is conservatively
-treated as having occurred first (a plain `first_up_day < first_down_day`
-strict comparison implements this — see tests/test_outcomes.py). This
-convention is flagged as an open methodological note in the Phase 1 report
-since it can affect the resulting statistic.
+treated as having occurred first (see the first-hit-day loop below — a
+strict `<` comparison between first_up_day and first_down_day implements
+this). This convention is flagged as an open methodological note in the
+Phase 1 report since it can affect the resulting statistic.
+
+Memory note (found 2026-08-13 debugging an OOM on the full 2022-2026
+backfill, ~12M rows): the original implementation materialized an
+(n_rows, horizon) matrix per forward-looking quantity (high, low, the
+new-20d-high flag, plus per-threshold hit matrices) via
+pd.concat([...shift(-k)...]). For horizon=20 and n_rows in the tens of
+millions that is tens of GB of transient float/bool matrices — enough to
+OOM-kill the runner outright (no clean Python traceback, just a dead
+process — which is why the failure showed no usable logs and skipped the
+`if: always()` cache-save step, since the whole VM went down). Rewritten
+below as a single O(horizon) pass accumulating O(n_rows) running
+arrays (running max/min/any, per-threshold first-hit-day) instead of
+O(n_rows * horizon) matrices — same asymptotic time, a small constant
+number of O(n) arrays in memory at any point instead of O(horizon) of
+them.
 """
 
 from __future__ import annotations
@@ -24,24 +39,6 @@ from yolo_calibration.config import load_features_config
 from yolo_calibration.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-def _forward_stack(grouped: pd.core.groupby.generic.SeriesGroupBy, horizon: int) -> pd.DataFrame:
-    """Columns 0..horizon-1 hold shift(-1)..shift(-horizon): the next
-    `horizon` trading days' values for that ticker, NaN once past the
-    series end or across a ticker boundary (groupby.shift respects group
-    boundaries)."""
-    cols = {k: grouped.shift(-k) for k in range(1, horizon + 1)}
-    return pd.DataFrame(cols)
-
-
-def _first_hit_index(hit_matrix: np.ndarray) -> np.ndarray:
-    """hit_matrix: bool array (n, H). Returns int array: 0-based index of
-    first True per row, or H (sentinel = "never within window") if none."""
-    n, h = hit_matrix.shape
-    any_hit = hit_matrix.any(axis=1)
-    first_idx = np.where(any_hit, hit_matrix.argmax(axis=1), h)
-    return first_idx
 
 
 def compute_new_20d_high_flag(df: pd.DataFrame, lookback_days: int) -> pd.Series:
@@ -62,32 +59,55 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
     pct_thresholds = cfg["pct_moves"]
     atr_multiples = cfg["atr_multiples"]
 
+    n = len(df)
+    close0 = df["close"].to_numpy()
+    atr0 = df[atr_col].to_numpy()
+
     g_high = df.groupby("ticker", sort=False)["high"]
     g_low = df.groupby("ticker", sort=False)["low"]
     g_close = df.groupby("ticker", sort=False)["close"]
     g_new_high = df.groupby("ticker", sort=False)["is_new_20d_high"]
 
-    fwd_high = _forward_stack(g_high, horizon)
-    fwd_low = _forward_stack(g_low, horizon)
-    fwd_new_high = _forward_stack(g_new_high, horizon)
+    # O(n) running accumulators, updated incrementally over k=1..horizon
+    # (see module docstring — replaces the old O(n*horizon) matrices).
+    running_max_high = np.full(n, -np.inf)
+    running_min_low = np.full(n, np.inf)
+    running_any_new_high = np.zeros(n, dtype=bool)
+    seen_count = np.zeros(n, dtype=np.int32)
+    up_first_hit = {th: np.full(n, horizon, dtype=np.int32) for th in pct_thresholds}
+    down_first_hit = {th: np.full(n, horizon, dtype=np.int32) for th in pct_thresholds}
 
-    window_complete = fwd_high.notna().sum(axis=1) == horizon
+    for k in range(1, horizon + 1):
+        fwd_high_k = g_high.shift(-k).to_numpy()
+        fwd_low_k = g_low.shift(-k).to_numpy()
+        fwd_new_high_k = g_new_high.shift(-k).fillna(False).astype(bool).to_numpy()
 
-    close0 = df["close"].to_numpy()
-    atr0 = df[atr_col].to_numpy()
+        valid_k = ~np.isnan(fwd_high_k)
+        seen_count += valid_k
+
+        running_max_high = np.where(valid_k, np.fmax(running_max_high, fwd_high_k), running_max_high)
+        running_min_low = np.where(valid_k, np.fmin(running_min_low, fwd_low_k), running_min_low)
+        running_any_new_high |= (valid_k & fwd_new_high_k)
+
+        up_pct_k = (fwd_high_k / close0 - 1.0) * 100.0
+        down_pct_k = (fwd_low_k / close0 - 1.0) * 100.0
+        for th in pct_thresholds:
+            up_hit = valid_k & (up_pct_k >= th) & (up_first_hit[th] == horizon)
+            up_first_hit[th] = np.where(up_hit, k - 1, up_first_hit[th])
+            down_hit = valid_k & (down_pct_k <= -th) & (down_first_hit[th] == horizon)
+            down_first_hit[th] = np.where(down_hit, k - 1, down_first_hit[th])
+
+    window_complete = seen_count == horizon
 
     out = pd.DataFrame(index=df.index)
     suffix = f"_{horizon}d"
 
-    # Forward close at exactly t+H
+    # Forward close at exactly t+H (single O(n) shift, unchanged).
     fwd_close_h = g_close.shift(-horizon)
     out[f"forward_return_close{suffix}"] = (fwd_close_h / df["close"] - 1.0) * 100.0
 
-    window_max_high = fwd_high.max(axis=1)
-    window_min_low = fwd_low.min(axis=1)
-
-    mfe_pct = (window_max_high / close0 - 1.0) * 100.0
-    mae_pct = (window_min_low / close0 - 1.0) * 100.0
+    mfe_pct = (running_max_high / close0 - 1.0) * 100.0
+    mae_pct = (running_min_low / close0 - 1.0) * 100.0
     mfe_pct = np.where(window_complete, mfe_pct, np.nan)
     mae_pct = np.where(window_complete, mae_pct, np.nan)
     out[f"mfe_pct{suffix}"] = mfe_pct
@@ -99,13 +119,13 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
 
     mfe_atr_multiple = np.where(
         window_complete,
-        np.divide(window_max_high - close0, atr0, out=np.full_like(close0, np.nan, dtype=float),
+        np.divide(running_max_high - close0, atr0, out=np.full_like(close0, np.nan, dtype=float),
                   where=(atr0 != 0) & ~np.isnan(atr0)),
         np.nan,
     )
     mae_atr_multiple = np.where(
         window_complete,
-        np.divide(window_min_low - close0, atr0, out=np.full_like(close0, np.nan, dtype=float),
+        np.divide(running_min_low - close0, atr0, out=np.full_like(close0, np.nan, dtype=float),
                   where=(atr0 != 0) & ~np.isnan(atr0)),
         np.nan,
     )
@@ -116,17 +136,15 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
         mult_col = str(int(mult)) if float(mult).is_integer() else str(mult)
         out[f"reached_{mult_col}atr{suffix}"] = np.where(window_complete, mfe_atr_multiple >= mult, np.nan)
 
-    new_high_any = fwd_new_high.astype("boolean").any(axis=1)
-    out[f"new_20d_high_within_window{suffix}"] = np.where(window_complete, new_high_any, np.nan)
+    out[f"new_20d_high_within_window{suffix}"] = np.where(window_complete, running_any_new_high, np.nan)
 
-    # Sequential "reached +X% before -X%" per threshold
+    # Sequential "reached +X% before -X%" per threshold. Tie-break: a
+    # strict `<` means a same-day co-occurrence resolves to "down first"
+    # (down's first_hit is never made LARGER than up's in a tie), matching
+    # the documented conservative convention.
     for th in pct_thresholds:
         th_col = str(int(th)) if float(th).is_integer() else str(th)
-        up_hits = (fwd_high.to_numpy() / close0[:, None] - 1.0) * 100.0 >= th
-        down_hits = (fwd_low.to_numpy() / close0[:, None] - 1.0) * 100.0 <= -th
-        first_up = _first_hit_index(up_hits)
-        first_down = _first_hit_index(down_hits)
-        reached_before = first_up < first_down
+        reached_before = up_first_hit[th] < down_first_hit[th]
         out[f"reached_plus_{th_col}_before_minus_{th_col}{suffix}"] = np.where(
             window_complete, reached_before, np.nan
         )
