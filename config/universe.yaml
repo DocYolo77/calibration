@@ -44,6 +44,17 @@ market_cap:
   min_usd: 1_000_000_000
   # See config/market_cap_methodology.yaml for how point-in-time market cap
   # is approximated.
+  sensitivity:
+    # Standing data-quality diagnostic (reports/data_quality.py), not an
+    # eligibility rule: how close to min_usd counts as "a plausible vendor
+    # data error could flip this ticker-day's eligibility".
+    near_threshold_band_pct: 0.15
+    # A ticker-month whose market_cap changes by more than this multiple
+    # (up OR down, i.e. ratio > threshold or < 1/threshold) vs. the prior
+    # month, while inside the near-threshold band, is flagged as a likely
+    # shares-outstanding-instability artifact (see
+    # config/market_cap_methodology.yaml known_limitations).
+    volatility_ratio_threshold: 3.0
 
 filter_order:
   # Order is fixed for cost reasons: cheap filters first, expensive

@@ -59,6 +59,11 @@ outcome_horizons_days: [5, 10, 20]
 
 momentum_environment_outcomes:
   # Descriptive RS buckets only — NOT a leader definition (spec section 12).
+  # Consumed by outcomes/build_market_breadth.py (market_breadth_daily) —
+  # kept here rather than moved to features.yaml because it is a stock-track
+  # counterpart to the QQQ-health track's outcome_horizons_days above, and
+  # historically lived alongside it; it does NOT require QQQ constituents
+  # and is buildable even while the QQQ health track itself is unavailable.
   rs_buckets: [80, 90, 95]
   mfe_pct_thresholds: [5.0, 10.0]
   mfe_atr_multiples: [2.0, 3.0]

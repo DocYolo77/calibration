@@ -64,6 +64,15 @@ jobs:
           python -m yolo_calibration fetch-qqq-constituents --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" $FORCE_FLAG || \
           echo "::warning::QQQ constituent fetch failed or incomplete — QQQ health track may be unavailable (spec section 10 hard-stop behavior)."
 
+      - name: Materialize reference_tickers table
+        run: python -m yolo_calibration build-reference-tickers --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
+
+      # After all fetch attempts above (grouped_daily x2, qqq_constituents
+      # best-effort, reference_tickers) so it reflects the actual raw
+      # checkpoint coverage for this run, whatever it turned out to be.
+      - name: Materialize raw_manifest table
+        run: python -m yolo_calibration build-raw-manifest --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
+
       - name: Build market universe
         env:
           MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
@@ -82,6 +91,11 @@ jobs:
 
       - name: Build QQQ outcomes (best-effort)
         run: python -m yolo_calibration build-qqq-outcomes --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}" || true
+
+      # Independent of QQQ health/constituents availability (see
+      # outcomes/build_market_breadth.py) — always run, not best-effort.
+      - name: Build market breadth (D+H actual-eligible-universe RS breadth)
+        run: python -m yolo_calibration build-market-breadth --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"
 
       - name: Verify + generate reports
         run: python -m yolo_calibration verify --start "${{ inputs.start_date }}" --end "${{ inputs.end_date }}"

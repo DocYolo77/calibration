@@ -85,6 +85,30 @@ def test_reached_plus_before_minus_tie_break_and_ordering():
     out2 = build_horizon_outcomes(df_down_first, 3)
     assert out2.iloc[0]["reached_plus_5_before_minus_5_3d"] == False  # noqa: E712
 
+    # Neither the up-first nor the down-first case is a same-day tie.
+    assert out.iloc[0]["reached_plus_5_before_minus_5_tie_3d"] == False  # noqa: E712
+    assert out2.iloc[0]["reached_plus_5_before_minus_5_tie_3d"] == False  # noqa: E712
+
+
+def test_reached_plus_before_minus_tie_flag_marks_non_determinable_same_day_hits():
+    dates = pd.bdate_range("2023-01-02", periods=4)
+    # Day1 alone touches BOTH +5% (high=106) and -5% (low=94) -> daily OHLC
+    # cannot tell us which happened first intraday. Tie-break still
+    # conservatively resolves the value to "down first" (False), but the
+    # companion `_tie` column must flag this as non-determinable.
+    df = pd.DataFrame({
+        "date": dates, "ticker": "AAA",
+        "close": [100, 100, 100, 100],
+        "high": [100, 106, 100, 100],
+        "low": [100, 94, 100, 100],
+        "atr14": [2.0] * 4,
+        "is_new_20d_high": [False] * 4,
+    })
+    out = build_horizon_outcomes(df, 3)
+    row0 = out.iloc[0]
+    assert row0["reached_plus_5_before_minus_5_3d"] == False  # noqa: E712 (conservative tie-break)
+    assert row0["reached_plus_5_before_minus_5_tie_3d"] == True  # noqa: E712
+
 
 def test_new_20d_high_flag_no_lookahead():
     dates = pd.bdate_range("2023-01-02", periods=25)

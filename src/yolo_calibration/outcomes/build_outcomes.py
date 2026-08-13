@@ -6,13 +6,22 @@ and only to produce OUTCOME columns, never features.
 Column naming convention: every outcome column is suffixed `_{H}d` for
 horizon H in {5, 10, 20}, e.g. `mfe_pct_5d`, `reached_2atr_20d`.
 
-Tie-break convention (documented, not a trading decision): for
+Tie-break convention (documented, not a trading decision — KEPT as-is per
+explicit Phase 1 decision, no intraday pipeline added): for
 `reached_plus_X_before_minus_X`, if both the +X% and -X% thresholds are
 touched on the SAME forward trading day, the decline is conservatively
 treated as having occurred first (see the first-hit-day loop below — a
 strict `<` comparison between first_up_day and first_down_day implements
-this). This convention is flagged as an open methodological note in the
-Phase 1 report since it can affect the resulting statistic.
+this). Daily OHLC alone cannot tell us the true intraday order in this
+case — a same-day co-occurrence is genuinely NON-DETERMINABLE from the
+data we have, not merely inconvenient to compute. Every such case is
+counted and surfaced via a companion boolean diagnostic column,
+`reached_plus_X_before_minus_X_tie_{H}d` (True exactly when the tie-break
+rule had to be invoked to produce the corresponding `reached_plus_X_before_minus_X_{H}d`
+value) — see the per-threshold loop below and
+reports/data_quality.py for the aggregated count. This makes the scope of
+the convention's effect on the resulting statistic auditable rather than
+merely a documented caveat.
 
 Memory note (found 2026-08-13 debugging an OOM on the full 2022-2026
 backfill, ~12M rows): the original implementation materialized an
@@ -141,12 +150,20 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
     # Sequential "reached +X% before -X%" per threshold. Tie-break: a
     # strict `<` means a same-day co-occurrence resolves to "down first"
     # (down's first_hit is never made LARGER than up's in a tie), matching
-    # the documented conservative convention.
+    # the documented conservative convention. `_tie` companion column:
+    # True exactly when up_first_hit == down_first_hit on an ACTUAL hit day
+    # (< horizon, not the two "never reached" defaults coincidentally
+    # matching) — i.e. the case daily OHLC genuinely cannot order.
     for th in pct_thresholds:
         th_col = str(int(th)) if float(th).is_integer() else str(th)
-        reached_before = up_first_hit[th] < down_first_hit[th]
+        up_day, down_day = up_first_hit[th], down_first_hit[th]
+        reached_before = up_day < down_day
         out[f"reached_plus_{th_col}_before_minus_{th_col}{suffix}"] = np.where(
             window_complete, reached_before, np.nan
+        )
+        same_day_tie = (up_day == down_day) & (up_day < horizon)
+        out[f"reached_plus_{th_col}_before_minus_{th_col}_tie{suffix}"] = np.where(
+            window_complete, same_day_tie, np.nan
         )
 
     return out

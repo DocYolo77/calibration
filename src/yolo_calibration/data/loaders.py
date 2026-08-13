@@ -10,9 +10,16 @@ import pandas as pd
 from yolo_calibration.data.storage import (
     list_raw_grouped_daily_dates,
     list_raw_grouped_daily_unadjusted_dates,
+    list_raw_reference_tickers_dates,
     read_raw_grouped_daily,
     read_raw_grouped_daily_unadjusted,
+    read_raw_reference_tickers,
 )
+
+_REFERENCE_TICKERS_KEEP = [
+    "date", "ticker", "name", "market", "locale", "primary_exchange", "type", "active",
+    "currency_name", "cik",
+]
 
 _RENAME = {
     "T": "ticker",
@@ -68,6 +75,31 @@ def load_grouped_daily_unadjusted_range(start: date, end: date) -> pd.DataFrame:
         frames.append(df[["date", "ticker", "close"]].rename(columns={"close": "close_unadjusted"}))
     if not frames:
         return pd.DataFrame(columns=["date", "ticker", "close_unadjusted"])
+    out = pd.concat(frames, ignore_index=True)
+    out = out.sort_values(["ticker", "date"]).reset_index(drop=True)
+    return out
+
+
+def load_reference_tickers_range(start: date, end: date) -> pd.DataFrame:
+    """Concatenate raw per-day point-in-time reference-ticker checkpoints
+    into one tidy DataFrame: date, ticker, name, market, locale,
+    primary_exchange, type, active, currency_name, cik. `date` here is the
+    point-in-time as-of-date the snapshot was queried with (spec section
+    17 reproducibility) — the SAME ticker can legitimately appear with
+    different `type`/`active`/`primary_exchange` values across dates."""
+    frames = []
+    for d in list_raw_reference_tickers_dates(start, end):
+        raw = read_raw_reference_tickers(d)
+        if raw is None or raw.empty:
+            continue
+        df = raw.copy()
+        df["date"] = pd.Timestamp(d)
+        for col in _REFERENCE_TICKERS_KEEP:
+            if col not in df.columns:
+                df[col] = pd.NA
+        frames.append(df[_REFERENCE_TICKERS_KEEP])
+    if not frames:
+        return pd.DataFrame(columns=_REFERENCE_TICKERS_KEEP)
     out = pd.concat(frames, ignore_index=True)
     out = out.sort_values(["ticker", "date"]).reset_index(drop=True)
     return out

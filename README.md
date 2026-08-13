@@ -26,8 +26,10 @@ verändert **nicht** `DocYolo77/yolo-dashboard`.
 11. [Datenqualität & Sanity-Reports](#datenqualität--sanity-reports)
 12. [Bekannte Limitierungen](#bekannte-limitierungen)
 13. [Geklärt: Split-Adjustierung der historischen Preise](#geklärt-split-adjustierung-der-historischen-preise-2026-08-12)
-14. [Offene Fragen vor Phase 2](#offene-fragen-vor-phase-2)
-15. [Stop Condition (Phase 1)](#stop-condition-phase-1)
+14. [Geklärt am 2026-08-13](#geklärt-am-2026-08-13-vormals-offene-fragen-vor-phase-2)
+15. [Offen für Phase 2](#offen-für-phase-2)
+16. [Stop Condition (Phase 1)](#stop-condition-phase-1)
+17. [Phase 1 Abschlussbericht (Stock-Track)](#phase-1-abschlussbericht-stock-track)
 
 ---
 
@@ -48,16 +50,22 @@ src/yolo_calibration/
   features/technical.py       ATR/EMA/SMA/Returns/RS/Thrust (reine Funktionen)
   features/build_features.py  stock_features_daily Orchestrierung
   outcomes/build_outcomes.py  stock_outcomes_daily (5/10/20 Tage forward)
+  outcomes/build_market_breadth.py  market_breadth_daily — D0-Kohorte Forward-Performance +
+                                     D+H tatsächlich-eligible-Universe RS-Breadth (unabhängig
+                                     von QQQ-Health-Verfügbarkeit, s. unten)
   qqq_health/
     constituents.py            Point-in-time QQQ-Holdings, harter Stop bei fehlenden Daten
     breadth.py                  A/D, RANA, MCO, MCO-Z, MCSI, MCSI-Z, %>MA, H/L-Oszillator
     price_structure.py          QQQ eigene Preisstruktur + ATR
     build_qqq_health.py         qqq_health_daily Orchestrierung
-    build_qqq_outcomes.py       qqq_health_outcomes_daily (Index- + Momentum-Environment-Outcomes)
+    build_qqq_outcomes.py       qqq_health_outcomes_daily (nur noch INDEX-Outcomes — die
+                                 Momentum-Environment-Outcomes wurden nach
+                                 outcomes/build_market_breadth.py extrahiert, s. dort)
+  data/raw_manifest.py          raw_manifest — Checkpoint-Coverage pro Rohdatenquelle/Datum
   reports/
     data_quality.py             maschinen-/menschenlesbarer Datenqualitätsreport
     descriptive.py               Phase-1-Sanity-Check-Reports (keine Threshold-Optimierung)
-tests/                        pytest-Suite (36 Tests, synthetische Daten, keine Netzwerkzugriffe)
+tests/                        pytest-Suite (57 Tests, synthetische Daten, keine Netzwerkzugriffe)
 .github/workflows/
   ci.yml                       Tests bei jedem Push/PR
   historical-build.yml         workflow_dispatch, checkpointfähig via actions/cache
@@ -136,13 +144,39 @@ sichtbar macht.
 
 ## Market-Cap-Methode
 
-`market_cap(T, D) = close(T, D) * weighted_shares_outstanding(T, D)`,
+`market_cap(T, D) = close_UNADJUSTED(T, D) * weighted_shares_outstanding(T, D)`,
 wobei `weighted_shares_outstanding` über `ticker-overview?date=D` abgefragt
-wird (point-in-time nach letztem SEC-Filing vor D). **Niemals** wird
-today's Market Cap oder today's Shares Outstanding auf ein historisches
-Datum zurückgerechnet. Vollständig dokumentiert in
-`config/market_cap_methodology.yaml`, inklusive der Caching-Optimierung
-(Monatsraster) und bekannter Limitierungen.
+wird (point-in-time nach letztem SEC-Filing vor D), monatsweise gecacht
+(erster Tag des Monats). **Niemals** wird today's Market Cap oder today's
+Shares Outstanding auf ein historisches Datum zurückgerechnet. Vollständig
+dokumentiert in `config/market_cap_methodology.yaml`.
+
+**Entscheidung für Phase 1** (`decided_for_phase_1` in dieser Config):
+die monatliche Point-in-Time-Approximation wird **beibehalten** — keine
+filing-genaue Rekonstruktion (z.B. direkt aus SEC-EDGAR-Filing-Terminen)
+wird ergänzt, da der Aufwand gegenüber der gemessenen Auswirkung
+unverhältnismäßig wäre. Stattdessen läuft bei jedem `verify` ein
+permanenter Sensitivity-Diagnose-Check
+(`reports/data_quality.py::_market_cap_eligibility_sensitivity`,
+Config-Parameter `config/universe.yaml` `market_cap.sensitivity`):
+
+- **near-threshold**: Ticker-Tage, deren `market_cap` innerhalb von
+  `near_threshold_band_pct` (Standard 15%) der $1-Mrd.-Grenze liegt —
+  Eligibility, die durch einen plausiblen Vendor-Datenfehler allein kippen
+  könnte.
+- **volatile**: davon Ticker, deren monatlicher `market_cap`-Durchschnitt
+  mindestens einmal um mehr als `volatility_ratio_threshold` (Standard 3x)
+  zum Vormonat springt — das Muster, das beim echten 2023-Backfill bei
+  Tickern mit häufigen Reverse-Splits (z.B. `MULN`) gefunden wurde: die
+  vom Vendor gemeldete `weighted_shares_outstanding` selbst schwankt dort
+  stark zwischen benachbarten Monats-Buckets, auch wenn der (korrekt
+  unadjustierte) Preis sich glatt bewegt. Kein Preis-Adjustierungs-Bug
+  (der ist separat und bereits gefixt, s. unten) — ein
+  Vendor-Point-in-Time-Filing-Artefakt.
+
+Beide Zahlen sind rein deskriptiv (verändern `eligible`/`market_cap_ok`
+nicht) und fließen in `data_quality_report.md` sowie den
+Phase-1-Abschlussbericht ein.
 
 ## Feature-Definitionen
 
@@ -185,14 +219,29 @@ statistik-relevant)
 `reached_plus_X_before_minus_X`: Werden beide Schwellen (±X%) am selben
 Tag im Fenster berührt, wird konservativ angenommen, dass der Rückgang
 zuerst passierte (Tie-Break via striktem `<`-Vergleich, s.
-`outcomes/build_outcomes.py` Docstring). **Als offene Frage markiert** —
-sollte vor Phase 2 bei Bedarf überprüft werden.
+`outcomes/build_outcomes.py` Docstring). **Entscheidung für Phase 1**:
+diese Konvention wird **beibehalten** (keine Intraday-Pipeline ergänzt),
+aber jeder so entschiedene Fall wird jetzt explizit gezählt und markiert —
+eine begleitende Boolean-Spalte
+`reached_plus_X_before_minus_X_tie_{H}d` ist `True` genau dann, wenn die
+wahre Intraday-Reihenfolge aus Tages-OHLC nicht bestimmbar war (beide
+Schwellen am selben Tag berührt). `reports/data_quality.py` aggregiert
+diese Spalten zu einer Gesamtzahl + Prozentsatz je Schwelle/Horizont im
+Datenqualitätsreport.
 
-`qqq_health_outcomes_daily` "zukünftige Market Breadth" / RS80+/90+/95+-
-Anteile: berechnet auf der **gleichen Kohorte** (heute eligible Ticker),
-ausgewertet an deren eigener D+H-Zukunftszeile — nicht auf der zu D+H
-tatsächlich eligible Menge. **Ebenfalls als offene Frage markiert** (s.
-`qqq_health/build_qqq_outcomes.py` Docstring).
+**"Zukünftige Market Breadth" (`future_rs{bucket}plus_share_{H}d`,
+jetzt in `market_breadth_daily`, s. `outcomes/build_market_breadth.py`)**:
+**Gefixt am 2026-08-13.** Berechnet jetzt korrekt auf der zu D+H
+**tatsächlich eligible** Menge (deren eigene RS-Verteilung an D+H), NICHT
+mehr auf der an D0 eligible Kohorte, die nur auf Existenz (nicht
+Eligibility) ihrer D+H-Zukunftszeile geprüft wurde. Die D0-Kohorten-
+Forward-Performance (`median_forward_return_{H}d`, `mfe`/`mae`,
+`share_positive_{H}d`, `cohort_size_{H}d`) bleibt davon getrennt und
+unverändert auf der D0-Kohorten-Basis. Diese Tabelle ist zudem jetzt
+unabhängig von der QQQ-Health-Verfügbarkeit baubar (sie hing vorher
+fälschlich am `qqq_health_daily`-Erfolg, obwohl sie nie QQQ-Constituents
+oder -Preisdaten brauchte) — s. `outcomes/build_market_breadth.py`
+Docstring für die vollständige Herleitung.
 
 ## Datenhaltung
 
@@ -201,17 +250,29 @@ tatsächlich eligible Menge. **Ebenfalls als offene Frage markiert** (s.
   — Basis für Resumability.
 - **Processed** (`data/processed/<table>/year=YYYY/part.parquet`,
   gitignored): `market_universe_daily`, `stock_features_daily`,
-  `stock_outcomes_daily`, `qqq_health_daily`, `qqq_health_outcomes_daily`.
-  Jede Tabelle hat ein `_manifest.json` mit Build-Timestamp, Zeitraum,
-  Config-Version, Git-Commit-Hash, Quelle, Feature-Definitions-Version
+  `stock_outcomes_daily`, `qqq_health_daily`, `qqq_health_outcomes_daily`
+  (Index-Outcomes only, s. oben), `market_breadth_daily`,
+  `reference_tickers`, `raw_manifest`. Jede Tabelle hat ein
+  `_manifest.json` mit Build-Timestamp, Zeitraum, Config-Version,
+  Git-Commit-Hash, Quelle, Feature-Definitions-Version
   (`config.make_build_metadata`).
 - **Reports** (`reports/`, versioniert): `data_quality_report.{json,md}`,
   `reports/phase1_sanity_checks/*.csv`.
-- `reference_tickers` und `raw_manifest` als eigenständige Tabellen wurden
-  in Phase 1 nicht befüllt (die Referenzdaten werden als Rohdaten pro Tag
-  gehalten, s. `data/raw/reference_tickers/`); bei Bedarf leicht als
-  zusätzliche `processed`-Tabelle ergänzbar — **offene Frage für Phase 2**,
-  ob das für Debugging/Audit-Zwecke gewünscht ist.
+- **`reference_tickers`** (materialisiert seit 2026-08-13, CLI
+  `build-reference-tickers`): konsolidiert die täglichen Rohdaten-Checkpoints
+  (`data/raw/reference_tickers/`) zu einer versionierten `processed`-Tabelle
+  (date, ticker, type, market, primary_exchange, active, ...) — dieselbe
+  Point-in-Time-Semantik wie die Rohdaten, jetzt aber mit Build-Metadata und
+  ohne dass Konsumenten selbst über Tages-Parquets iterieren müssen.
+- **`raw_manifest`** (materialisiert seit 2026-08-13, CLI
+  `build-raw-manifest`): eine Zeile pro (Quelle, Datum) für jede der vier
+  Rohdatenquellen (`grouped_daily`, `grouped_daily_unadjusted`,
+  `qqq_constituents`, `reference_tickers`) mit `row_count` — reine
+  Coverage-/Reproduzierbarkeits-Metadaten (welche Checkpoints existieren
+  tatsächlich, wie viele Zeilen), kein Inhalts-Korrektheitscheck. Ein
+  fehlender Checkpoint erscheint als fehlende Zeile, ein leerer (z.B.
+  Markt-Feiertag) als vorhandene Zeile mit `row_count=0` — beides bleibt
+  unterscheidbar.
 
 ## Quickstart / CLI
 
@@ -222,9 +283,13 @@ export MASSIVE_API_KEY=...   # nie in eine Datei schreiben
 python -m yolo_calibration fetch-raw --start 2022-01-01 --end 2026-08-11
 python -m yolo_calibration fetch-qqq-constituents --start 2022-01-01 --end 2026-08-11
 
+python -m yolo_calibration build-reference-tickers --start 2022-01-01 --end 2026-08-11
+python -m yolo_calibration build-raw-manifest --start 2022-01-01 --end 2026-08-11
+
 python -m yolo_calibration build-universe --start 2022-01-01 --end 2026-08-11 --no-fetch
 python -m yolo_calibration build-stock-features --start 2022-01-01 --end 2026-08-11
 python -m yolo_calibration build-stock-outcomes --start 2022-01-01 --end 2026-08-11
+python -m yolo_calibration build-market-breadth --start 2022-01-01 --end 2026-08-11
 python -m yolo_calibration build-qqq-health --start 2022-01-01 --end 2026-08-11 --no-fetch
 python -m yolo_calibration build-qqq-outcomes --start 2022-01-01 --end 2026-08-11
 
@@ -249,7 +314,7 @@ setzt bei den zuletzt gespeicherten Rohdaten fort statt neu zu laden.
 ## Tests
 
 ```bash
-pytest -q          # 45 Tests, ausschließlich synthetische Daten, kein Netzwerkzugriff
+pytest -q          # 57 Tests, ausschließlich synthetische Daten, kein Netzwerkzugriff
 ```
 
 Abgedeckt: ADR20-Exaktheit, True Range/ATR14 (kein Wilder-Smoothing),
@@ -269,9 +334,18 @@ QQQ-Daten, **Skaleninvarianz der Ratio-Features gegenüber dem
 Split-Adjustierungs-Faktor** (`test_scale_invariance.py` — market_cap
 nutzt nachweislich den unadjustierten Preis, alle anderen Features sind
 beweisbar unabhängig vom Skalierungsfaktor), Market-Cap-Enrichment-Batching
-nach Ticker-Monat statt Ticker-Tag, sowie ein End-to-End-Integrationstest
-der gesamten Pipeline (raw → universe → features → outcomes) mit
-synthetischen Daten und gestubtem API-Client.
+nach Ticker-Monat statt Ticker-Tag, Market-Cap-Eligibility-Sensitivity-
+Diagnose (near-threshold + volatilitätsgetriebene Ticker,
+`test_data_quality_report.py`), `future_market_breadth` auf Basis der zu
+D+H tatsächlich eligible Universe statt der D0-Kohorte
+(`test_market_breadth.py` — inkl. eines expliziten Regressionstests, der
+beweist, dass das alte kohortenbasierte Ergebnis vom neuen abweicht),
+`reached_plus_X_before_minus_X`-Tie-Diagnose (`test_outcomes.py`,
+`test_data_quality_report.py`), Materialisierung von `reference_tickers`/
+`raw_manifest` aus Rohdaten-Checkpoints (`test_reference_tickers_and_manifest.py`),
+sowie ein End-to-End-Integrationstest der gesamten Pipeline
+(raw → universe → features → outcomes → market_breadth) mit synthetischen
+Daten und gestubtem API-Client.
 
 **In dieser Session konnte kein Live-Lauf gegen die echte Massive-API
 durchgeführt werden** (kein `MASSIVE_API_KEY` verfügbar). Die Testsuite
@@ -348,27 +422,40 @@ jetzt als Regressionstest abgesichert
 Ein `implausible_price_row_count`-Diagnose-Feld im Data-Quality-Report
 bleibt als Frühwarnsystem für künftige Builds erhalten.
 
-## Offene Fragen vor Phase 2
+## Geklärt am 2026-08-13 (vormals "Offene Fragen vor Phase 2")
 
-1. Ist die Monats-Cache-Granularität für Market-Cap-Enrichment
-   (`compute_point_in_time_market_cap`) präzise genug, oder wird eine
-   feingranularere (Filing-Datum-genaue) Rekonstruktion benötigt?
-2. Tie-Break-Konvention für `reached_plus_X_before_minus_X` bei
-   Gleichzeitigkeit — konservativ (Rückgang zuerst) korrekt genug, oder
-   sollte Intraday-Reihenfolge (falls verfügbar) genutzt werden?
-3. Interpretation von "zukünftige Market Breadth" / RS80+/90+/95+-Anteile
-   in `qqq_health_outcomes_daily`: gleiche Kohorte in der Zukunft
-   ausgewertet (aktuelle Implementierung) vs. tatsächlich zu D+H eligible
-   Menge?
-4. Sollen `reference_tickers` und `raw_manifest` als eigene versionierte
-   `processed`-Tabellen materialisiert werden (aktuell nur als Rohdaten
-   pro Tag vorhanden)?
-5. War die QQQ-ETF-Constituents-Quelle für den GESAMTEN Zeitraum
-   2023–2026 lückenlos verfügbar? Muss beim ersten echten Backfill via
-   `verify`-Report geprüft werden.
-6. Welche RS-Horizont-Wahl (1D/1W/1M) ist für spätere Leader-Definitionen
-   vorgesehen? Phase 1 berechnet alle drei gleichwertig und trifft keine
-   Vorauswahl.
+1. **Monats-Cache-Granularität für Market-Cap**: **beibehalten**, keine
+   filing-genaue Rekonstruktion in Phase 1 (s.
+   [Market-Cap-Methode](#market-cap-methode) und
+   `config/market_cap_methodology.yaml` `decided_for_phase_1`). Ein
+   permanenter Sensitivity-Diagnose-Check macht die Auswirkung in jedem
+   Build sichtbar statt sie stillschweigend zu tragen.
+2. **Tie-Break-Konvention** für `reached_plus_X_before_minus_X`:
+   **beibehalten** (konservativ, Rückgang zuerst), keine Intraday-Pipeline.
+   Jeder nicht-bestimmbare Fall wird jetzt gezählt und im
+   Datenqualitätsreport ausgewiesen (`_tie`-Spalten, s.
+   [Feature-Definitionen](#feature-definitionen)).
+3. **"Zukünftige Market Breadth"**: **gefixt** — berechnet jetzt auf der zu
+   D+H tatsächlich eligible Menge, nicht der D0-Kohorte (s.
+   `outcomes/build_market_breadth.py`).
+4. **`reference_tickers` und `raw_manifest`**: **materialisiert** als
+   eigene versionierte `processed`-Tabellen (s. [Datenhaltung](#datenhaltung)).
+5. **QQQ-ETF-Constituents-Verfügbarkeit 2022–2026**: **beantwortet** — der
+   Endpoint liefert auf dem aktuell gebuchten Plan durchgehend `403 "You
+   are not entitled to this data"`, unabhängig vom angefragten Datum (eine
+   Plan-Entitlement-Antwort, keine datumsabhängige Datenlücke). Explizit
+   per `data_quality_report.md` bestätigt für die real gebauten Jahre 2023,
+   2025 und 2026 (Teiljahr); 2022/2024 zeigen strukturell dasselbe
+   Verhalten (derselbe plankonstante 403, nicht erneut einzeln verifiziert).
+   QQQ-Health bleibt entsprechend permanent `"unavailable"`; kein Fallback
+   implementiert (Spec-Section-10-Hard-Stop bleibt aktiv).
+
+## Offen für Phase 2
+
+6. Welche RS-Horizont-Wahl (jetzt: 1D/1W/1M/3M/6M/12M) ist für spätere
+   Leader-Definitionen vorgesehen? Phase 1 berechnet alle gleichwertig und
+   trifft bewusst **keine** Vorauswahl — diese Entscheidung wird hier nicht
+   getroffen.
 
 ## Stop Condition (Phase 1)
 
@@ -378,3 +465,137 @@ Market-Regime-Schwellen. Diese werden separat in Phase 2 auf Basis von
 2023–2024 kalibriert, auf 2025 validiert (ohne Nachjustierung) und
 einmalig auf 2026 getestet (`config/time_splits.yaml`). Es wurde und wird
 kein Code in `DocYolo77/yolo-dashboard` verändert.
+
+---
+
+## Phase 1 Abschlussbericht (Stock-Track)
+
+**Stand: 2026-08-13.** Deckt den Stock-Track ab (`market_universe_daily`,
+`stock_features_daily`, `stock_outcomes_daily`, `market_breadth_daily`,
+`reference_tickers`, `raw_manifest`). Der QQQ-Health-Track ist explizit
+**nicht** Teil dieses Berichts, da er keine Daten produziert (permanent
+`"unavailable"`, s. Punkt 5 unten) — es gibt dort nichts abzuschließen.
+
+### 1. Was gebaut wurde
+
+Eine deterministische, point-in-time-korrekte Daten-Pipeline von
+Massive-Rohdaten bis zu fertigen Feature-/Outcome-Tabellen für 2022–2026
+(Teiljahr bis 08-11), in fünf separaten, checkpointfähigen GitHub-Actions-
+Läufen (einer pro Jahr — siehe Abschnitt 4). Architektur, Formeln und
+Konfiguration sind vollständig oben im README sowie in `config/*.yaml`
+dokumentiert; dieser Abschnitt fasst nur den Stand zum Phase-1-Abschluss
+und die in dieser Session (2026-08-13) getroffenen Entscheidungen zusammen.
+
+### 2. In dieser Session geklärt/gefixt (2026-08-13)
+
+Alle vier Punkte sind Code- bzw. Dokumentationsänderungen, die vor diesem
+Abschluss explizit angefordert und umgesetzt wurden — Details, Code-Stellen
+und Tests jeweils oben verlinkt:
+
+1. **Market-Cap-Approximation**: monatliches Point-in-Time-Raster wird für
+   Phase 1 **beibehalten**, keine filing-genaue Rekonstruktion. Neu: ein
+   permanenter Sensitivity-Diagnose-Check (`market_cap_eligibility_sensitivity`
+   im Data-Quality-Report) macht sichtbar, wie viele Ticker-Tage nahe der
+   $1-Mrd.-Grenze liegen und davon wie viele durch eine unplausible
+   Shares-Outstanding-Schwankung (Reverse-Split-Muster wie bei `MULN`)
+   getrieben sind.
+2. **`future_market_breadth`**: war faktisch nie lauffähig (hing hinter dem
+   permanent nicht verfügbaren QQQ-Health-Track) UND rechnete auf der
+   falschen Basis (D0-Kohorte statt D+H-tatsächlich-eligible-Universe).
+   Beides gefixt: neue eigenständige Tabelle `market_breadth_daily`
+   (`outcomes/build_market_breadth.py`), unabhängig von QQQ-Verfügbarkeit,
+   mit korrigierter Semantik und Regressionstest, der explizit beweist,
+   dass altes und neues Ergebnis divergieren.
+3. **`reference_tickers`/`raw_manifest`**: als versionierte `processed`-
+   Tabellen materialisiert (`build-reference-tickers`, `build-raw-manifest`
+   CLI-Kommandos), mit Build-Metadata.
+4. **Tie-Break-Konvention** (`reached_plus_X_before_minus_X`): unverändert
+   beibehalten (keine Intraday-Pipeline), aber jeder nicht-bestimmbare Fall
+   wird jetzt über eine `_tie`-Begleitspalte pro Zeile gezählt und im
+   Data-Quality-Report aggregiert.
+
+**Wichtiger Vorbehalt**: Punkte 1 (Sensitivity-Zahlen), 2
+(`market_breadth_daily`-Werte) und 4 (Tie-Counts) sind neuer Code, der
+noch **nicht** gegen die bereits gebauten realen 2022–2026-Datensätze
+gelaufen ist — diese wurden vor der Implementierung gebaut. Die
+Korrektheit ist über die Testsuite (synthetische Daten, s. unten)
+abgesichert; die tatsächlichen Zahlen für den realen Datensatz liegen erst
+nach einem erneuten `verify`- bzw. `build-market-breadth`-Lauf vor. Das
+ist eine bewusste Reihenfolge-Entscheidung dieser Session (Fix zuerst
+dokumentieren/implementieren, Neu-Lauf danach), keine offene Lücke in der
+Umsetzung selbst.
+
+### 3. Empirisch bestätigt (echte Daten, vor dieser Session gebaut)
+
+Aus der Exploration der echten Backfill-Ergebnisse (DuckDB-Abfragen gegen
+heruntergeladene Artefakte, s. Abschnitt "Geklärt: Split-Adjustierung"):
+
+| Jahr | Trading Days | Feature-Zeilen | Ticker gesamt | Median eligible | Implausible-Price-Zeilen |
+|---|---|---|---|---|---|
+| 2023 | 250 | 2.663.316 | 13.048 | 403 | 2.698 (17 Ticker) |
+| 2025 | 250 | 2.814.310 | 13.423 | 550 | 138 (4 Ticker) |
+| 2026 (bis 08-11) | 152 | 1.839.539 | 13.953 | 986 | 0 |
+
+Alle drei liefen fehlerfrei durch (2022/2024 vorab mit identischem
+Code-Stand, s. Abschnitt 4). `market_cap` nutzt nachweislich den
+unadjustierten Preis (MULN-Beispiel: `close` läuft bis auf ~$858M
+(Adjustierungs-Artefakt, erwartet), `market_cap` bleibt im Bereich
+Zehntausende bis niedrige Millionen — plausibel für einen Penny Stock).
+
+**Vorab-Befund zur Sensitivity-Diagnose (manuelle Ad-hoc-Analyse, motivierte
+Punkt 1 oben)**: im 2023-Datensatz zeigen 209 Ticker mindestens einen
+Monat-zu-Monat-`market_cap`-Sprung >3x gefolgt von einem Rückgang >2,5x —
+das MULN-Reverse-Split-Muster. Davon führen 356 Ticker-Tage (von ~99.000
+eligible Zeilen insgesamt, ≈0,36%) zu einer spurios über die $1-Mrd.-Grenze
+gehobenen Eligibility. Das ist die konkrete Zahl, die zur permanenten
+Diagnose in Punkt 1 geführt hat — ein erneuter `verify`-Lauf mit dem neuen
+Code liefert diese Zahl künftig automatisch statt durch manuelle Analyse.
+
+### 4. Abdeckung 2022–2026
+
+| Jahr | Status | Code-Stand (Commit) |
+|---|---|---|
+| 2022 | ✅ gebaut | `7eba4fa` (Market-Cap-Fix + Structural-Features, vor OOM-Fix — funktional identisch, s. unten) |
+| 2023 | ✅ gebaut (Rebuild) | `7684ff2` (aktuell) |
+| 2024 | ✅ gebaut | `7eba4fa` |
+| 2025 | ✅ gebaut | `7684ff2` (aktuell) |
+| 2026 (bis 08-11) | ✅ gebaut (Teiljahr) | `7684ff2` (aktuell) |
+
+Der einzige Unterschied zwischen `7eba4fa` und dem aktuellen `7684ff2` ist
+ein reiner Speicher-Fix in `outcomes/build_outcomes.py` (O(n) statt
+O(n·Horizont) Matrizen, behebt einen OOM-Crash bei einem versuchten
+zusammenhängenden Mehrjahres-Lauf) — zum Zeitpunkt dieses Fixes durch die
+damalige volle Testsuite als bit-identisch zum Vorher-Verhalten abgesichert
+(exakte Wert-Tests in `test_outcomes.py`). 2022/2024 sind inhaltlich NICHT
+stale und müssen nicht neu gebaut werden. Die vier in dieser Session
+umgesetzten Fixes (Abschnitt 2) sind jedoch neuer als alle fünf Jahres-Läufe
+— siehe Vorbehalt oben.
+
+### 5. Bekannte, akzeptierte Limitierungen (nicht Teil von Phase 2)
+
+- **QQQ-Health-Track dauerhaft unavailable**: `/etf-global/v1/constituents`
+  liefert plan-bedingt `403` für jedes Datum. Kein Fallback implementiert
+  (Spec-Section-10-Hard-Stop). Ein Plan-Upgrade ist die einzige Abhilfe;
+  außerhalb des Scopes dieses Berichts.
+- **Market-Cap-Monatsraster**: akzeptierte Phase-1-Entscheidung (Abschnitt
+  2, Punkt 1) — dauerhaft überwacht, nicht behoben.
+- **Tie-Break bei `reached_plus_X_before_minus_X`**: akzeptierte Phase-1-
+  Entscheidung (Abschnitt 2, Punkt 4) — dauerhaft gezählt, nicht behoben.
+
+### 6. Explizit NICHT Teil dieses Abschlusses
+
+- **Keine Visualisierung** der Daten wurde begonnen.
+- **Keine Leader-/Fresh-Leader-/Constructive-Reset-/Regime-Schwellen**
+  wurden gewählt oder kalibriert (Stop Condition bleibt in Kraft).
+- **Keine RS-Horizont-Entscheidung** für eine spätere Leader-Definition
+  (Punkt 6 unter "Offen für Phase 2").
+- Kein Code in `DocYolo77/yolo-dashboard` wurde berührt.
+
+### 7. Empfohlener nächster Schritt (nicht in dieser Session ausgeführt)
+
+Ein erneuter `verify`- (und, wo relevant, `build-market-breadth`-)Lauf
+gegen die bestehenden 2022–2026-Checkpoints, um die in Abschnitt 2
+genannten neuen Diagnose-Zahlen (Sensitivity, Tie-Counts,
+`market_breadth_daily`-Werte) für den vollständigen realen Datensatz
+einmalig zu erzeugen, bevor Phase 2 (Leader-/Threshold-Kalibrierung)
+beginnt.

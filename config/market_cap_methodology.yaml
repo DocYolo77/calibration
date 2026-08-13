@@ -80,6 +80,55 @@ known_limitations:
     shares outstanding only changes at filing boundaries. This is a caching
     optimization only and does not change the point-in-time value returned
     for any given date.
+  - >
+    MONTHLY caching granularity (queried at the first-of-month date, see
+    fetch_point_in_time_shares_outstanding): a share-count change that
+    happens mid-month (e.g. a large ATM raise, a reverse split, or a filing
+    correction) is only picked up starting the NEXT month's bucket, never
+    retroactively within the month it occurred. This is a deliberate Phase 1
+    precision/cost tradeoff, not a bug — see decided_for_phase_1 below.
+  - >
+    Found 2026-08-13 auditing the (now fixed) 2023 backfill: for tickers with
+    FREQUENT corporate actions in short succession (repeated reverse splits /
+    heavy dilution — MULN in 2023 is the canonical example), the
+    month-to-month weighted_shares_outstanding value itself can swing by an
+    order of magnitude between adjacent monthly buckets, producing an
+    implausible market_cap swing even though the (correctly unadjusted)
+    price moves smoothly. This is a vendor point-in-time-filing artifact,
+    not a price-adjustment bug (that issue — see why_unadjusted_close_specifically
+    above — is separate and already fixed). It can spuriously flip a
+    genuinely-sub-$1B name to eligible for one or more monthly buckets.
+    `reports/data_quality.py` now runs a permanent sensitivity diagnostic
+    for this (see market_cap_eligibility_sensitivity below) rather than
+    attempting to fix the underlying vendor data in Phase 1.
+
+decided_for_phase_1: >
+  Resolves the former open_question_for_phase_2 below: Phase 1 KEEPS the
+  monthly-bucket historical-close x point-in-time-shares-outstanding
+  approximation as-is. A filing-date-precise reconstruction (e.g. directly
+  from SEC EDGAR filing effective dates) was considered and explicitly
+  REJECTED for Phase 1 as disproportionate engineering cost relative to the
+  measured impact (see market_cap_eligibility_sensitivity: the affected
+  share of the eligible universe is small — see the Phase 1 final report for
+  the measured percentage). Instead, the limitation is documented here and
+  a standing sensitivity/data-quality diagnostic
+  (reports/data_quality.py::market_cap_eligibility_sensitivity) flags every
+  build's near-threshold and volatility-driven eligibility cases so the
+  impact stays visible rather than hidden. Revisiting filing-precise
+  reconstruction remains a legitimate Phase 2 option if the diagnostic ever
+  shows material impact on a specific Leader/threshold calibration.
+
+market_cap_eligibility_sensitivity: >
+  Diagnostic added to reports/data_quality.py (config knobs in
+  config/universe.yaml market_cap.sensitivity): flags (a) ticker-days whose
+  market_cap sits within `near_threshold_band_pct` of the $1B eligibility
+  cutoff (min_usd) — i.e. eligibility that a plausible vendor-data error
+  could flip either way — and (b) tickers whose month-over-month market_cap
+  ratio exceeds `volatility_ratio_threshold` at least once while also
+  falling within the near-threshold band, which specifically targets the
+  MULN-style shares-outstanding-instability pattern above. Both are
+  descriptive counts only — no eligibility values are changed by this
+  diagnostic.
 
 explicitly_forbidden:
   - "Using today's live market_cap field for a historical eligibility date."
@@ -88,7 +137,9 @@ explicitly_forbidden:
   - "Using the split-ADJUSTED close for market_cap (see why_unadjusted_close_specifically above)."
 
 open_question_for_phase_2: >
-  Whether a stricter point-in-time source (e.g. per-filing-date shares
-  outstanding reconstructed directly from SEC EDGAR) is worth the added
-  engineering cost is left open; flagged in the Phase 1 final report rather
-  than decided unilaterally here.
+  RESOLVED for Phase 1 — see decided_for_phase_1 above (the monthly
+  approximation is kept, no filing-precise rebuild in Phase 1). Whether a
+  stricter point-in-time source (e.g. per-filing-date shares outstanding
+  reconstructed directly from SEC EDGAR) is worth the added engineering
+  cost remains a legitimate Phase 2 option, to be revisited only if the
+  market_cap_eligibility_sensitivity diagnostic shows material impact.

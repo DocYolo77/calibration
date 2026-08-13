@@ -1,19 +1,19 @@
-"""`qqq_health_outcomes_daily` (spec section 12): two outcome groups.
+"""`qqq_health_outcomes_daily`: INDEX outcomes only — forward return / MFE /
+MAE / max drawdown / new-20D-high / EMA20 loss-reclaim, computed on QQQ
+itself. Requires `qqq_health_daily` (which requires point-in-time QQQ
+constituents — see `qqq_health/constituents.py`), so this table is empty
+whenever that track is unavailable (currently permanent, Massive plan
+limitation — see README "Bekannte Limitierungen"), same as before.
 
-  A) INDEX outcomes: forward return / MFE / MAE / max drawdown / new-20D-high
-     / EMA20 loss-reclaim, computed on QQQ itself.
-  B) MOMENTUM-ENVIRONMENT outcomes: the same forward windows, but
-     aggregated across the daily ELIGIBLE stock universe (median forward
-     return/MFE/MAE, hit-rate shares, share positive, RS80+/90+/95+ bucket
-     shares). These RS buckets are explicitly descriptive only — spec
-     section 12 forbids turning them into a "leader" definition in Phase 1.
-
-Interpretation note (flagged as an open question in the Phase 1 report,
-since the spec is not fully explicit here): "zukünftige Market Breadth" /
-RS80+/90+/95+ shares are computed on the SAME cohort of tickers eligible on
-date D, evaluated at their own D+H future row — i.e. "of today's eligible
-universe, what fraction shows RS>=80/90/95 a horizon later" — rather than
-on whatever (possibly different) set of tickers is eligible on D+H itself.
+The MOMENTUM-ENVIRONMENT / "future market breadth" outcomes that used to
+live in this module (`build_momentum_environment_outcomes`) were extracted
+2026-08-13 into `outcomes/build_market_breadth.py` as the always-buildable
+`market_breadth_daily` table: that computation never actually needed QQQ
+constituents or QQQ price data (only `stock_features_daily` +
+`stock_outcomes_daily`), so gating it behind this module's QQQ-health
+prerequisite meant it silently never ran in practice. See that module's
+docstring for the semantics fix (D+H's own actually-eligible universe,
+not the D0 cohort followed forward) and the reasoning for the split.
 """
 
 from __future__ import annotations
@@ -100,68 +100,6 @@ def build_qqq_index_outcomes(qqq_price_structure: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(pieces, axis=1)
 
 
-def build_momentum_environment_outcomes(stock_features_daily: pd.DataFrame,
-                                         stock_outcomes_daily: pd.DataFrame) -> pd.DataFrame:
-    cfg = load_qqq_health_config()["momentum_environment_outcomes"]
-    horizons = load_qqq_health_config()["outcome_horizons_days"]
-    rs_buckets = cfg["rs_buckets"]
-
-    feats = stock_features_daily.sort_values(["ticker", "date"]).copy()
-    merged = feats.merge(stock_outcomes_daily, on=["date", "ticker"], how="left")
-
-    g_rs = merged.groupby("ticker", sort=False)["rs_percentile_1m"]
-    g_elig = merged.groupby("ticker", sort=False)["eligible"]
-
-    rows = []
-    for h in horizons:
-        fwd_rs = g_rs.shift(-h)
-        fwd_elig = g_elig.shift(-h)
-        elig_mask = merged["eligible"].astype(bool)
-
-        sub = merged.loc[elig_mask, ["date"]].copy()
-        sub["forward_return"] = merged.loc[elig_mask, f"forward_return_close_{h}d"]
-        sub["mfe_pct"] = merged.loc[elig_mask, f"mfe_pct_{h}d"]
-        sub["mae_pct"] = merged.loc[elig_mask, f"mae_pct_{h}d"]
-        sub["mfe_ge_5"] = merged.loc[elig_mask, f"reached_plus_5pct_{h}d"].astype("boolean")
-        sub["mfe_ge_10"] = merged.loc[elig_mask, f"reached_plus_10pct_{h}d"].astype("boolean")
-        sub["mfe_ge_2atr"] = merged.loc[elig_mask, f"reached_2atr_{h}d"].astype("boolean")
-        sub["mfe_ge_3atr"] = merged.loc[elig_mask, f"reached_3atr_{h}d"].astype("boolean")
-        sub["positive"] = sub["forward_return"] > 0
-        sub["future_rs"] = fwd_rs.loc[elig_mask]
-        sub["future_elig_valid"] = fwd_elig.loc[elig_mask].notna()
-
-        g = sub.groupby("date")
-        agg = pd.DataFrame({
-            f"median_forward_return_{h}d": g["forward_return"].median(),
-            f"median_mfe_pct_{h}d": g["mfe_pct"].median(),
-            f"median_mae_pct_{h}d": g["mae_pct"].median(),
-            f"share_mfe_ge_5pct_{h}d": g["mfe_ge_5"].mean(),
-            f"share_mfe_ge_10pct_{h}d": g["mfe_ge_10"].mean(),
-            f"share_mfe_ge_2atr_{h}d": g["mfe_ge_2atr"].mean(),
-            f"share_mfe_ge_3atr_{h}d": g["mfe_ge_3atr"].mean(),
-            f"share_positive_{h}d": g["positive"].mean(),
-            f"cohort_size_{h}d": g["forward_return"].count(),
-        })
-        for bucket in rs_buckets:
-            valid = sub[sub["future_elig_valid"]]
-            share = (
-                valid.assign(_hit=valid["future_rs"] >= bucket)
-                .groupby("date")["_hit"].mean()
-            )
-            agg[f"future_rs{bucket}plus_share_{h}d"] = share
-        rows.append(agg)
-
-    out = rows[0]
-    for r in rows[1:]:
-        out = out.join(r, how="outer")
-    return out.reset_index().sort_values("date").reset_index(drop=True)
-
-
-def build_qqq_health_outcomes_daily(qqq_price_structure: pd.DataFrame,
-                                     stock_features_daily: pd.DataFrame,
-                                     stock_outcomes_daily: pd.DataFrame) -> pd.DataFrame:
+def build_qqq_health_outcomes_daily(qqq_price_structure: pd.DataFrame) -> pd.DataFrame:
     logger.info("Building QQQ index outcomes...")
-    index_outcomes = build_qqq_index_outcomes(qqq_price_structure)
-    logger.info("Building momentum-environment outcomes...")
-    env_outcomes = build_momentum_environment_outcomes(stock_features_daily, stock_outcomes_daily)
-    return index_outcomes.merge(env_outcomes, on="date", how="outer").sort_values("date").reset_index(drop=True)
+    return build_qqq_index_outcomes(qqq_price_structure)

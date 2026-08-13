@@ -16,19 +16,26 @@ from yolo_calibration.data.fetch_raw import (
     fetch_qqq_constituents_range,
     fetch_reference_tickers_range,
 )
+from yolo_calibration.data.loaders import load_reference_tickers_range
 from yolo_calibration.data.massive_client import MassiveClient
+from yolo_calibration.data.raw_manifest import build_raw_manifest
 from yolo_calibration.data.storage import (
     read_processed,
     write_manifest,
     write_processed_by_year,
 )
 from yolo_calibration.features.build_features import build_stock_features_daily
+from yolo_calibration.outcomes.build_market_breadth import build_market_breadth_daily
 from yolo_calibration.outcomes.build_outcomes import build_stock_outcomes_daily
 from yolo_calibration.qqq_health.build_qqq_health import build_qqq_health_daily
 from yolo_calibration.qqq_health.build_qqq_outcomes import build_qqq_health_outcomes_daily
 from yolo_calibration.qqq_health.constituents import QQQConstituentsUnavailable, build_qqq_constituents_daily, component_counts
 from yolo_calibration.reports.data_quality import build_data_quality_report, write_data_quality_report
-from yolo_calibration.reports.descriptive import generate_qqq_health_sanity_reports, generate_stock_sanity_reports
+from yolo_calibration.reports.descriptive import (
+    generate_market_breadth_sanity_reports,
+    generate_qqq_health_sanity_reports,
+    generate_stock_sanity_reports,
+)
 from yolo_calibration.universe.build_universe import build_market_universe_daily
 from yolo_calibration.utils.logging import get_logger
 
@@ -59,6 +66,34 @@ def cmd_fetch_qqq_constituents(args: argparse.Namespace) -> int:
     client = MassiveClient()
     result = fetch_qqq_constituents_range(client, args.start, args.end, force=args.force)
     logger.info("QQQ constituents fetch: %s", result)
+    return 0
+
+
+def cmd_build_reference_tickers(args: argparse.Namespace) -> int:
+    """Materializes the `reference_tickers` processed table from the
+    already-fetched raw per-day checkpoints (does not fetch — run
+    fetch-raw first)."""
+    df = load_reference_tickers_range(args.start, args.end)
+    if df.empty:
+        logger.error("No raw reference-ticker checkpoints found for the requested range — run fetch-raw first.")
+        return 1
+    write_processed_by_year("reference_tickers", df)
+    write_manifest("reference_tickers", make_build_metadata(args.start, args.end, source="massive").to_dict())
+    logger.info("Wrote reference_tickers: %d rows", len(df))
+    return 0
+
+
+def cmd_build_raw_manifest(args: argparse.Namespace) -> int:
+    """Materializes the `raw_manifest` processed table: per (source, date),
+    whether a raw checkpoint exists and its row count — reproducibility
+    coverage metadata, not a content-correctness check."""
+    df = build_raw_manifest(args.start, args.end)
+    if df.empty:
+        logger.error("No raw checkpoints of any kind found for the requested range — run fetch-raw first.")
+        return 1
+    write_processed_by_year("raw_manifest", df)
+    write_manifest("raw_manifest", make_build_metadata(args.start, args.end, source="derived").to_dict())
+    logger.info("Wrote raw_manifest: %d rows", len(df))
     return 0
 
 
@@ -121,17 +156,28 @@ def cmd_build_qqq_health(args: argparse.Namespace) -> int:
 
 def cmd_build_qqq_outcomes(args: argparse.Namespace) -> int:
     qqq_health = read_processed("qqq_health_daily")
-    features = read_processed("stock_features_daily")
-    outcomes = read_processed("stock_outcomes_daily")
-    if qqq_health.empty or features.empty or outcomes.empty:
-        logger.error("Missing prerequisite table(s) — run build-qqq-health / build-stock-features / "
-                     "build-stock-outcomes first.")
+    if qqq_health.empty:
+        logger.error("qqq_health_daily is empty — run build-qqq-health first. Note: this table is empty "
+                     "whenever the QQQ health track is unavailable (see README 'Bekannte Limitierungen').")
         return 1
-    df = build_qqq_health_outcomes_daily(qqq_health, features, outcomes)
+    df = build_qqq_health_outcomes_daily(qqq_health)
     write_processed_by_year("qqq_health_outcomes_daily", df)
     write_manifest("qqq_health_outcomes_daily",
                     make_build_metadata(args.start, args.end, source="derived").to_dict())
     logger.info("Wrote qqq_health_outcomes_daily: %d rows", len(df))
+    return 0
+
+
+def cmd_build_market_breadth(args: argparse.Namespace) -> int:
+    features = read_processed("stock_features_daily")
+    outcomes = read_processed("stock_outcomes_daily")
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) — run build-stock-features / build-stock-outcomes first.")
+        return 1
+    df = build_market_breadth_daily(features, outcomes)
+    write_processed_by_year("market_breadth_daily", df)
+    write_manifest("market_breadth_daily", make_build_metadata(args.start, args.end, source="derived").to_dict())
+    logger.info("Wrote market_breadth_daily: %d rows", len(df))
     return 0
 
 
@@ -141,6 +187,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     outcomes = read_processed("stock_outcomes_daily")
     qqq_health = read_processed("qqq_health_daily")
     qqq_outcomes = read_processed("qqq_health_outcomes_daily")
+    market_breadth = read_processed("market_breadth_daily")
 
     qqq_health_error = None
     component_counts_df = None
@@ -167,6 +214,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         qqq_health_outcomes_daily=qqq_outcomes if not qqq_outcomes.empty else None,
         qqq_constituent_component_counts=component_counts_df,
         qqq_health_error=qqq_health_error,
+        market_breadth_daily=market_breadth if not market_breadth.empty else None,
     )
     json_path, md_path = write_data_quality_report(report)
     logger.info("Wrote data quality report: %s / %s", json_path, md_path)
@@ -175,6 +223,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         generate_stock_sanity_reports(features, outcomes)
     if not qqq_health.empty and not qqq_outcomes.empty:
         generate_qqq_health_sanity_reports(qqq_health, qqq_outcomes)
+    if not market_breadth.empty:
+        generate_market_breadth_sanity_reports(market_breadth)
 
     if report["warnings"]:
         for w in report["warnings"]:
@@ -196,6 +246,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_fetch_qqq_constituents)
 
+    p = sub.add_parser("build-reference-tickers", help="Materialize reference_tickers from raw checkpoints.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_reference_tickers)
+
+    p = sub.add_parser("build-raw-manifest", help="Materialize raw_manifest (checkpoint coverage) table.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_raw_manifest)
+
     p = sub.add_parser("build-universe", help="Build market_universe_daily.")
     _add_date_range_args(p)
     p.add_argument("--no-fetch", action="store_true", help="Skip fetching raw data; use existing checkpoints only.")
@@ -214,9 +272,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-fetch", action="store_true")
     p.set_defaults(func=cmd_build_qqq_health)
 
-    p = sub.add_parser("build-qqq-outcomes", help="Build qqq_health_outcomes_daily.")
+    p = sub.add_parser("build-qqq-outcomes", help="Build qqq_health_outcomes_daily (QQQ index outcomes).")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_build_qqq_outcomes)
+
+    p = sub.add_parser("build-market-breadth", help="Build market_breadth_daily (always buildable, "
+                                                      "independent of QQQ health availability).")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_market_breadth)
 
     p = sub.add_parser("verify", help="Data quality + Phase 1 descriptive sanity-check reports.")
     _add_date_range_args(p)

@@ -58,6 +58,36 @@ def generate_stock_sanity_reports(stock_features_daily: pd.DataFrame,
     return results
 
 
+def generate_market_breadth_sanity_reports(market_breadth_daily: pd.DataFrame,
+                                            out_dir: Path | None = None) -> dict[str, pd.DataFrame]:
+    """Descriptive only: does today's RS breadth (basis B, D+H's own
+    eligible universe — see outcomes/build_market_breadth.py) associate
+    with the D0-eligible cohort's own subsequent forward performance
+    (basis A)? The two bases are intentionally kept separate throughout the
+    table; this bucket check simply asks whether they move together, it
+    does not fuse them into one metric."""
+    out_dir = out_dir or (REPO_ROOT / "reports" / "phase1_sanity_checks")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    outcome_cols_10d = [c for c in [
+        "median_forward_return_10d", "median_mfe_pct_10d", "median_mae_pct_10d", "share_positive_10d",
+    ] if c in market_breadth_daily.columns]
+
+    results = {}
+    for bucket_col, label in [
+        ("breadth_rs80plus_share", "breadth_rs80plus_share_bucket"),
+        ("breadth_rs90plus_share", "breadth_rs90plus_share_bucket"),
+    ]:
+        if bucket_col not in market_breadth_daily.columns or not outcome_cols_10d:
+            continue
+        table = bucket_vs_outcomes(market_breadth_daily, bucket_col, outcome_cols_10d, bucket_label=label)
+        results[label] = table
+        if not table.empty:
+            table.to_csv(out_dir / f"{label}_vs_10d_cohort_outcomes.csv", index=False)
+
+    return results
+
+
 def generate_qqq_health_sanity_reports(qqq_health_daily: pd.DataFrame,
                                         qqq_health_outcomes_daily: pd.DataFrame,
                                         out_dir: Path | None = None) -> dict[str, pd.DataFrame]:
@@ -65,9 +95,11 @@ def generate_qqq_health_sanity_reports(qqq_health_daily: pd.DataFrame,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     merged = qqq_health_daily.merge(qqq_health_outcomes_daily, on="date", how="inner")
+    # qqq_health_outcomes_daily now holds INDEX outcomes only (qqq_* prefix)
+    # — the momentum-environment / D0-cohort stats that used to live here
+    # moved to market_breadth_daily (outcomes/build_market_breadth.py).
     outcome_cols_10d = [c for c in [
-        "median_forward_return_10d", "median_mfe_pct_10d", "median_mae_pct_10d",
-        "share_positive_10d",
+        "qqq_forward_return_10d", "qqq_mfe_pct_10d", "qqq_mae_pct_10d", "qqq_max_drawdown_pct_10d",
     ] if c in merged.columns]
 
     results = {}

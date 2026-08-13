@@ -30,8 +30,10 @@ PROCESSED_TABLES = (
     "stock_outcomes_daily",
     "qqq_health_daily",
     "qqq_health_outcomes_daily",
+    "market_breadth_daily",
     "market_universe_daily",
     "reference_tickers",
+    "raw_manifest",
 )
 
 
@@ -138,6 +140,16 @@ def raw_qqq_constituents_exists(effective_date: date) -> bool:
     return raw_qqq_constituents_path(effective_date).exists()
 
 
+def list_raw_qqq_constituents_dates(start: date, end: date) -> list[date]:
+    found = []
+    for year_dir in RAW_DIR.glob("qqq_constituents/year=*"):
+        for f in year_dir.glob("date=*.parquet"):
+            d = date.fromisoformat(f.stem.split("=", 1)[1])
+            if start <= d <= end:
+                found.append(d)
+    return sorted(found)
+
+
 # ---- RAW checkpoint layer: point-in-time reference tickers ---------------
 
 def raw_reference_tickers_path(as_of_date: date) -> Path:
@@ -161,6 +173,16 @@ def read_raw_reference_tickers(as_of_date: date) -> pd.DataFrame | None:
 
 def raw_reference_tickers_exists(as_of_date: date) -> bool:
     return raw_reference_tickers_path(as_of_date).exists()
+
+
+def list_raw_reference_tickers_dates(start: date, end: date) -> list[date]:
+    found = []
+    for year_dir in RAW_DIR.glob("reference_tickers/year=*"):
+        for f in year_dir.glob("date=*.parquet"):
+            d = date.fromisoformat(f.stem.split("=", 1)[1])
+            if start <= d <= end:
+                found.append(d)
+    return sorted(found)
 
 
 # ---- PROCESSED layer -------------------------------------------------------

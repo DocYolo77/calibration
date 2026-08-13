@@ -13,6 +13,7 @@ import yolo_calibration.data.cache as cache
 import yolo_calibration.data.storage as storage
 from yolo_calibration.data.massive_client import MassiveClient
 from yolo_calibration.features.build_features import build_stock_features_daily
+from yolo_calibration.outcomes.build_market_breadth import build_market_breadth_daily
 from yolo_calibration.outcomes.build_outcomes import build_stock_outcomes_daily
 from yolo_calibration.universe.build_universe import build_market_universe_daily
 
@@ -93,11 +94,18 @@ def test_full_pipeline_wiring(isolated_storage, stub_client):
     assert not outcomes.empty
     assert "mfe_pct_5d" in outcomes.columns
     assert "forward_return_close_20d" in outcomes.columns
+    assert "reached_plus_5_before_minus_5_tie_5d" in outcomes.columns
 
     # RS percentiles should only be populated for eligible rows.
     non_eligible = features[~features["eligible"]]
     if not non_eligible.empty:
         assert non_eligible["rs_percentile_1m"].isna().all()
+
+    # market_breadth_daily must be buildable independent of QQQ health.
+    breadth = build_market_breadth_daily(features, outcomes)
+    assert not breadth.empty
+    assert "future_rs80plus_share_5d" in breadth.columns
+    assert "median_forward_return_5d" in breadth.columns
 
 
 def test_market_cap_enrichment_batches_by_ticker_month_not_ticker_day(isolated_storage, monkeypatch):
