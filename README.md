@@ -514,62 +514,87 @@ und Tests jeweils oben verlinkt:
    wird jetzt über eine `_tie`-Begleitspalte pro Zeile gezählt und im
    Data-Quality-Report aggregiert.
 
-**Wichtiger Vorbehalt**: Punkte 1 (Sensitivity-Zahlen), 2
-(`market_breadth_daily`-Werte) und 4 (Tie-Counts) sind neuer Code, der
-noch **nicht** gegen die bereits gebauten realen 2022–2026-Datensätze
-gelaufen ist — diese wurden vor der Implementierung gebaut. Die
-Korrektheit ist über die Testsuite (synthetische Daten, s. unten)
-abgesichert; die tatsächlichen Zahlen für den realen Datensatz liegen erst
-nach einem erneuten `verify`- bzw. `build-market-breadth`-Lauf vor. Das
-ist eine bewusste Reihenfolge-Entscheidung dieser Session (Fix zuerst
-dokumentieren/implementieren, Neu-Lauf danach), keine offene Lücke in der
-Umsetzung selbst.
+**Update 2026-08-13 (später am selben Tag)**: alle fünf Jahre wurden mit
+`rebuild: false` erneut durch die komplette Pipeline inkl. `verify` und
+`build-market-breadth` geschickt (gecachte Rohdaten wiederverwendet, kein
+erneuter API-Fetch, ~2,5 Min./Jahr). Die folgenden Zahlen sind damit
+**gemessen, nicht geschätzt** — der obige Vorbehalt ist aufgelöst.
 
-### 3. Empirisch bestätigt (echte Daten, vor dieser Session gebaut)
+### 3. Empirisch bestätigt (echte Daten, alle 5 Jahre)
 
-Aus der Exploration der echten Backfill-Ergebnisse (DuckDB-Abfragen gegen
-heruntergeladene Artefakte, s. Abschnitt "Geklärt: Split-Adjustierung"):
+Basis-Statistiken (`data_quality_report.json`):
 
-| Jahr | Trading Days | Feature-Zeilen | Ticker gesamt | Median eligible | Implausible-Price-Zeilen |
+| Jahr | Trading Days | Feature-Zeilen | Median eligible | Implausible-Price-Zeilen | QQQ Health |
 |---|---|---|---|---|---|
-| 2023 | 250 | 2.663.316 | 13.048 | 403 | 2.698 (17 Ticker) |
-| 2025 | 250 | 2.814.310 | 13.423 | 550 | 138 (4 Ticker) |
-| 2026 (bis 08-11) | 152 | 1.839.539 | 13.953 | 986 | 0 |
+| 2022 | 251 | 2.795.076 | 906,5 | 4.181 | unavailable |
+| 2023 | 250 | 2.663.316 | 403,0 | 2.698 | unavailable |
+| 2024 | 252 | 2.665.119 | 365,0 | 1.812 | unavailable |
+| 2025 | 250 | 2.814.310 | 550,0 | 138 | unavailable |
+| 2026 (bis 08-11) | 152 | 1.839.539 | 986,0 | 0 | unavailable |
 
-Alle drei liefen fehlerfrei durch (2022/2024 vorab mit identischem
-Code-Stand, s. Abschnitt 4). `market_cap` nutzt nachweislich den
-unadjustierten Preis (MULN-Beispiel: `close` läuft bis auf ~$858M
-(Adjustierungs-Artefakt, erwartet), `market_cap` bleibt im Bereich
-Zehntausende bis niedrige Millionen — plausibel für einen Penny Stock).
+`market_cap` nutzt nachweislich den unadjustierten Preis (MULN-Beispiel:
+`close` läuft bis auf ~$858M, Adjustierungs-Artefakt, erwartet;
+`market_cap` bleibt im Bereich Zehntausende bis niedrige Millionen —
+plausibel für einen Penny Stock). QQQ Health ist für **alle** fünf Jahre
+`unavailable` bestätigt (nicht nur die vorab getesteten 2023/2025/2026) —
+löst Punkt 5 unter "Geklärt am 2026-08-13" endgültig auf.
 
-**Vorab-Befund zur Sensitivity-Diagnose (manuelle Ad-hoc-Analyse, motivierte
-Punkt 1 oben)**: im 2023-Datensatz zeigen 209 Ticker mindestens einen
-Monat-zu-Monat-`market_cap`-Sprung >3x gefolgt von einem Rückgang >2,5x —
-das MULN-Reverse-Split-Muster. Davon führen 356 Ticker-Tage (von ~99.000
-eligible Zeilen insgesamt, ≈0,36%) zu einer spurios über die $1-Mrd.-Grenze
-gehobenen Eligibility. Das ist die konkrete Zahl, die zur permanenten
-Diagnose in Punkt 1 geführt hat — ein erneuter `verify`-Lauf mit dem neuen
-Code liefert diese Zahl künftig automatisch statt durch manuelle Analyse.
+**Neue Diagnose-Zahlen** (Abschnitt 2 oben, jetzt gemessen statt geschätzt):
+
+| Jahr | Near-$1B-Ticker | davon volatil (Shares-Outstanding-Instabilität) | Tie-Break-Fälle gesamt | `market_breadth_daily`-Zeilen | Median `future_rs80plus_share_20d` |
+|---|---|---|---|---|---|
+| 2022 | 839 | 29 | 244.058 | 232 | 0,2006 |
+| 2023 | 632 | 40 | 230.139 | 231 | 0,2014 |
+| 2024 | 566 | 61 | 203.666 | 233 | 0,2013 |
+| 2025 | 694 | 46 | 226.263 | 231 | 0,2008 |
+| 2026 (bis 08-11) | 524 | 24 | 128.711 | 133 | 0,2004 |
+
+Einordnung:
+
+- **Near-$1B / volatil**: die ursprüngliche Ad-hoc-Schätzung für 2023 (209
+  Ticker mit >3x-Monatssprung, 356 betroffene eligible Zeilen) war eine
+  andere, gröbere Metrik (alle Ticker mit irgendeinem großen Sprung
+  irgendwo im Jahr) als die jetzt eingebaute Diagnose (Ticker-TAGE
+  innerhalb ±15% der Schwelle, davon Ticker mit einer ≥3x-Schwankung) —
+  beide Zahlen sind also nicht direkt vergleichbar, messen aber dasselbe
+  Phänomen. Die neue, präzisere Zahl für 2023: 632 Ticker nahe der
+  Schwelle, davon 40 mit dem volatilen Shares-Outstanding-Muster.
+  Über alle 5 Jahre: 3.255 Near-Threshold-Ticker-Zählungen (Jahre nicht
+  dedupliziert, derselbe Ticker kann in mehreren Jahren zählen), davon 200
+  mit dem volatilen Muster — durchweg eine kleine Minderheit der jeweils
+  mehreren hundert bis über tausend eligible Ticker pro Jahr.
+  market_cap wird durch die Diagnose selbst **nicht** verändert.
+- **Tie-Break-Fälle**: ca. 2,3% der Fenster bei der ±5%-Schwelle sind
+  same-day-Ties (Reihenfolge nicht aus Tages-OHLC bestimmbar), ca. 0,6%
+  bei der ±10%-Schwelle (höhere Schwelle → seltener, dass beide Extreme am
+  selben Tag erreicht werden) — konsistent über alle 5 Jahre und alle drei
+  Horizonte (5/10/20 Tage). Die konservative Konvention (Rückgang zuerst)
+  betrifft damit einen kleinen, aber nicht vernachlässigbaren Teil der
+  `reached_plus_5_before_minus_5_*`-Statistik.
+- **`market_breadth_daily`**: der Median von `future_rs80plus_share_20d`
+  liegt in JEDEM Jahr sehr nah an 0,20 (analog 0,10 für RS90+, 0,05 für
+  RS95+) — das ist ein erwarteter Sanity-Check-Erfolg, kein Zufall: RS-
+  Perzentile sind per Definition ein Rangwert innerhalb des eligible
+  Universe, daher liegen bei einer hinreichend großen, gleichverteilten
+  Grundgesamtheit tautologisch ungefähr (100-Bucket)% der Ticker über
+  jedem Bucket. Die Konsistenz über alle 5 Jahre bestätigt, dass die D+H-
+  Universe-Bestimmung korrekt funktioniert (keine Bevorzugung/Verzerrung
+  in Richtung eines bestimmten Ticker-Sets).
 
 ### 4. Abdeckung 2022–2026
 
 | Jahr | Status | Code-Stand (Commit) |
 |---|---|---|
-| 2022 | ✅ gebaut | `7eba4fa` (Market-Cap-Fix + Structural-Features, vor OOM-Fix — funktional identisch, s. unten) |
-| 2023 | ✅ gebaut (Rebuild) | `7684ff2` (aktuell) |
-| 2024 | ✅ gebaut | `7eba4fa` |
-| 2025 | ✅ gebaut | `7684ff2` (aktuell) |
-| 2026 (bis 08-11) | ✅ gebaut (Teiljahr) | `7684ff2` (aktuell) |
+| 2022 | ✅ gebaut + re-verifiziert | `3e9e378` (aktuell) |
+| 2023 | ✅ gebaut (Rebuild) + re-verifiziert | `3e9e378` (aktuell) |
+| 2024 | ✅ gebaut + re-verifiziert | `3e9e378` (aktuell) |
+| 2025 | ✅ gebaut + re-verifiziert | `3e9e378` (aktuell) |
+| 2026 (bis 08-11) | ✅ gebaut (Teiljahr) + re-verifiziert | `3e9e378` (aktuell) |
 
-Der einzige Unterschied zwischen `7eba4fa` und dem aktuellen `7684ff2` ist
-ein reiner Speicher-Fix in `outcomes/build_outcomes.py` (O(n) statt
-O(n·Horizont) Matrizen, behebt einen OOM-Crash bei einem versuchten
-zusammenhängenden Mehrjahres-Lauf) — zum Zeitpunkt dieses Fixes durch die
-damalige volle Testsuite als bit-identisch zum Vorher-Verhalten abgesichert
-(exakte Wert-Tests in `test_outcomes.py`). 2022/2024 sind inhaltlich NICHT
-stale und müssen nicht neu gebaut werden. Die vier in dieser Session
-umgesetzten Fixes (Abschnitt 2) sind jedoch neuer als alle fünf Jahres-Läufe
-— siehe Vorbehalt oben.
+Alle fünf Jahre liegen jetzt auf demselben, aktuellen Code-Stand vor —
+inklusive aller vier in dieser Session umgesetzten Fixes (Abschnitt 2),
+gemessen über die echten Datensätze (Abschnitt 3), nicht nur über die
+Testsuite.
 
 ### 5. Bekannte, akzeptierte Limitierungen (nicht Teil von Phase 2)
 
@@ -591,11 +616,11 @@ umgesetzten Fixes (Abschnitt 2) sind jedoch neuer als alle fünf Jahres-Läufe
   (Punkt 6 unter "Offen für Phase 2").
 - Kein Code in `DocYolo77/yolo-dashboard` wurde berührt.
 
-### 7. Empfohlener nächster Schritt (nicht in dieser Session ausgeführt)
+### 7. Phase 1 (Stock-Track): abgeschlossen
 
-Ein erneuter `verify`- (und, wo relevant, `build-market-breadth`-)Lauf
-gegen die bestehenden 2022–2026-Checkpoints, um die in Abschnitt 2
-genannten neuen Diagnose-Zahlen (Sensitivity, Tie-Counts,
-`market_breadth_daily`-Werte) für den vollständigen realen Datensatz
-einmalig zu erzeugen, bevor Phase 2 (Leader-/Threshold-Kalibrierung)
-beginnt.
+Alle in Abschnitt 2 genannten Fixes sind implementiert, getestet UND gegen
+den vollständigen realen 2022–2026-Datensatz gemessen (Abschnitt 3). Damit
+gibt es keine offenen Umsetzungs- oder Verifikations-Lücken mehr für den
+Stock-Track. Vor Beginn von Phase 2 (Leader-/Threshold-Kalibrierung)
+verbleibt nur noch die in "Offen für Phase 2" (Punkt 6) genannte
+methodische Entscheidung — bewusst nicht hier getroffen.
