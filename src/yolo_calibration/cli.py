@@ -9,7 +9,9 @@ import argparse
 import sys
 from datetime import date, datetime
 
-from yolo_calibration.config import make_build_metadata
+import pandas as pd
+
+from yolo_calibration.config import REPO_ROOT, make_build_metadata
 from yolo_calibration.data.fetch_raw import (
     fetch_grouped_daily_range,
     fetch_grouped_daily_unadjusted_range,
@@ -36,6 +38,7 @@ from yolo_calibration.reports.descriptive import (
     generate_qqq_health_sanity_reports,
     generate_stock_sanity_reports,
 )
+from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report
 from yolo_calibration.universe.build_universe import build_market_universe_daily
 from yolo_calibration.utils.logging import get_logger
 
@@ -232,6 +235,42 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_rs_benchmark_report(args: argparse.Namespace) -> int:
+    """Purely descriptive research report (reports/rs_benchmark.py): every
+    RS horizon (1D/1W/1M/3M/6M/12M) bucketed against the 5D/10D/20D stock
+    outcomes, for ONE calendar year at a time. Hard-guarded to a single
+    calendar year so this command cannot silently be pointed at a range
+    spanning years the caller did not intend to analyze yet — the guard is
+    year-agnostic by design (not literally hardcoded to 2024), but the
+    workflow/CLI invocation controls which year is actually requested."""
+    if args.start.year != args.end.year:
+        logger.error("RS benchmark report must be built for a single calendar year; got %s..%s.",
+                     args.start, args.end)
+        return 1
+    year = args.start.year
+
+    features = read_processed("stock_features_daily", years=[year])
+    outcomes = read_processed("stock_outcomes_daily", years=[year])
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) for year %d — run build-stock-features / "
+                     "build-stock-outcomes first.", year)
+        return 1
+
+    # Defense in depth: restrict to the exact requested range even though
+    # the year-partitioned read above already scopes to `year`.
+    features = features[(features["date"] >= pd.Timestamp(args.start)) & (features["date"] <= pd.Timestamp(args.end))]
+    outcomes = outcomes[(outcomes["date"] >= pd.Timestamp(args.start)) & (outcomes["date"] <= pd.Timestamp(args.end))]
+
+    tables = build_rs_benchmark_report(features, outcomes)
+
+    out_dir = REPO_ROOT / "reports" / f"rs_benchmark_{year}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key, table in tables.items():
+        table.to_csv(out_dir / f"{key}.csv", index=False)
+    logger.info("Wrote %d RS benchmark tables to %s", len(tables), out_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m yolo_calibration")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -284,6 +323,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="Data quality + Phase 1 descriptive sanity-check reports.")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("build-rs-benchmark-report",
+                        help="Descriptive RS-horizon-vs-outcome benchmark report for one calendar year "
+                             "(no threshold/best-horizon selection).")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_rs_benchmark_report)
 
     return parser
 
