@@ -12,7 +12,9 @@ from yolo_calibration.reports.rs_benchmark import (
     bucket_coarse_deciles,
     bucket_fine_above_80,
     build_rs_benchmark_report,
+    build_rs_benchmark_report_common_sample,
     compute_bucket_stats,
+    compute_common_sample_mask,
 )
 
 
@@ -100,6 +102,93 @@ def test_no_threshold_selection_or_best_horizon_columns():
     forbidden_tokens = ("best", "optimal", "threshold", "recommend", "selected")
     for col in out.columns:
         assert not any(tok in col.lower() for tok in forbidden_tokens), col
+
+
+def _outcome_row_stub(date_, ticker):
+    row = {"date": date_, "ticker": ticker}
+    for h in (5, 10, 20):
+        row[f"mfe_pct_{h}d"] = 5.0
+        row[f"mae_pct_{h}d"] = -3.0
+        row[f"forward_return_close_{h}d"] = 1.0
+        row[f"reached_plus_5pct_{h}d"] = 1.0
+        row[f"reached_plus_10pct_{h}d"] = 0.0
+        row[f"reached_2atr_{h}d"] = 1.0
+        row[f"reached_3atr_{h}d"] = 0.0
+        row[f"reached_plus_5_before_minus_5_{h}d"] = 1.0
+        row[f"reached_plus_10_before_minus_5_{h}d"] = 0.0
+    return row
+
+
+def _common_sample_fixture():
+    """5 rows (T1..T5, in that order), one date, all eligible. All RS
+    values sit in [80, 100] so BOTH bucket schemes (coarse and
+    fine_above_80) are non-trivially populated. T1/T2/T5 have all 6 RS
+    horizons populated (the common sample); T3 is missing RS12M only, T4
+    is missing RS3M only -- both excluded from the common sample despite
+    having 5 of 6 horizons populated, but still present (with real values)
+    in the full-sample report for the horizons they DO have."""
+    d = pd.Timestamp("2024-06-03")
+    full_rs = {
+        "rs_percentile_1d": 82.0, "rs_percentile_1w": 85.0, "rs_percentile_1m": 88.0,
+        "rs_percentile_3m": 90.0, "rs_percentile_6m": 92.0, "rs_percentile_12m": 95.0,
+    }
+    t3 = dict(full_rs)
+    t3["rs_percentile_12m"] = np.nan
+    t4 = dict(full_rs)
+    t4["rs_percentile_3m"] = np.nan
+    by_ticker = {"T1": full_rs, "T2": full_rs, "T3": t3, "T4": t4, "T5": full_rs}
+
+    feat_rows = [{"date": d, "ticker": t, "eligible": True, **rs} for t, rs in by_ticker.items()]
+    out_rows = [_outcome_row_stub(d, t) for t in by_ticker]
+    return pd.DataFrame(feat_rows), pd.DataFrame(out_rows)
+
+
+def test_compute_common_sample_mask_requires_all_six_horizons():
+    features, outcomes = _common_sample_fixture()
+    mask = compute_common_sample_mask(features)
+    assert mask.tolist() == [True, True, False, False, True]  # T1,T2,T5 in; T3,T4 out
+
+
+def test_common_sample_report_every_table_shares_identical_total_n():
+    features, outcomes = _common_sample_fixture()
+    tables, summary = build_rs_benchmark_report_common_sample(features, outcomes)
+
+    assert summary["n_full_eligible"] == 5
+    assert summary["n_common_sample"] == 3
+    assert summary["retained_pct"] == 60.0
+
+    totals = {key: table["n"].sum() for key, table in tables.items()}
+    assert set(totals.values()) == {3}  # every one of the 36 tables sums to the common-sample size
+
+
+def test_common_sample_report_does_not_affect_full_sample_report():
+    features, outcomes = _common_sample_fixture()
+    full_tables = build_rs_benchmark_report(features, outcomes)
+    common_tables, _ = build_rs_benchmark_report_common_sample(features, outcomes)
+
+    # RS12M full-sample includes T1,T2,T4,T5 (T3 excluded, missing RS12M itself) -> n=4.
+    assert full_tables["rs_percentile_12m__coarse__10d"]["n"].sum() == 4
+    # RS3M full-sample includes T1,T2,T3,T5 (T4 excluded) -> n=4.
+    assert full_tables["rs_percentile_3m__coarse__10d"]["n"].sum() == 4
+    # Common-sample restricts BOTH to the same fixed 3-row population.
+    assert common_tables["rs_percentile_12m__coarse__10d"]["n"].sum() == 3
+    assert common_tables["rs_percentile_3m__coarse__10d"]["n"].sum() == 3
+
+
+def test_common_sample_report_zero_common_rows_still_returns_valid_tables():
+    d = pd.Timestamp("2024-06-03")
+    feat_rows = [{
+        "date": d, "ticker": "ONLY", "eligible": True,
+        "rs_percentile_1d": 50.0, "rs_percentile_1w": 50.0, "rs_percentile_1m": 50.0,
+        "rs_percentile_3m": 50.0, "rs_percentile_6m": 50.0, "rs_percentile_12m": np.nan,
+    }]
+    features = pd.DataFrame(feat_rows)
+    outcomes = pd.DataFrame([_outcome_row_stub(d, "ONLY")])
+    tables, summary = build_rs_benchmark_report_common_sample(features, outcomes)
+    assert summary["n_common_sample"] == 0
+    assert summary["n_full_eligible"] == 1
+    assert summary["retained_pct"] == 0.0
+    assert set(tables["rs_percentile_1d__coarse__10d"]["n"].unique()) == {0}
 
 
 def _synthetic_features_outcomes():

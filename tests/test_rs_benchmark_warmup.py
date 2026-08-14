@@ -27,6 +27,7 @@ benchmark report:
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import date
 
 import numpy as np
@@ -286,3 +287,52 @@ def test_no_automatic_best_horizon_or_threshold_logic_end_to_end(warmup_pipeline
         cols = pd.read_csv(path, nrows=0).columns
         for col in cols:
             assert not any(tok in col.lower() for tok in forbidden_tokens), f"{path.name}::{col}"
+
+
+def test_common_sample_report_writes_to_separate_directory_and_leaves_full_sample_untouched(warmup_pipeline):
+    args = argparse.Namespace(start=warmup_pipeline["report_start"], end=warmup_pipeline["report_end"])
+    assert cli.cmd_build_rs_benchmark_report(args) == 0
+    full_dir = storage.PROCESSED_DIR.parent / "reports" / f"rs_benchmark_{REPORT_YEAR}"
+    full_csv_before = (full_dir / "rs_percentile_1d__coarse__10d.csv").read_text()
+
+    assert cli.cmd_build_rs_benchmark_common_sample_report(args) == 0
+    common_dir = storage.PROCESSED_DIR.parent / "reports" / f"rs_benchmark_{REPORT_YEAR}_common_sample"
+    assert common_dir != full_dir
+    assert common_dir.exists()
+    common_csvs = list(common_dir.glob("*.csv"))
+    assert len(common_csvs) == 6 * 2 * 3
+    assert (common_dir / "_summary.json").exists()
+
+    # Full-sample directory/content must be completely unaffected by running
+    # the common-sample command afterwards.
+    assert (full_dir / "rs_percentile_1d__coarse__10d.csv").read_text() == full_csv_before
+
+
+def test_common_sample_report_summary_and_fixed_population_end_to_end(warmup_pipeline):
+    args = argparse.Namespace(start=warmup_pipeline["report_start"], end=warmup_pipeline["report_end"])
+    assert cli.cmd_build_rs_benchmark_common_sample_report(args) == 0
+
+    out_dir = storage.PROCESSED_DIR.parent / "reports" / f"rs_benchmark_{REPORT_YEAR}_common_sample"
+    summary = json.loads((out_dir / "_summary.json").read_text())
+    assert summary["n_full_eligible"] == int((warmup_pipeline["features"]["date"].dt.year == REPORT_YEAR).sum())
+    assert 0 <= summary["n_common_sample"] <= summary["n_full_eligible"]
+    assert summary["retained_pct"] == pytest.approx(
+        100.0 * summary["n_common_sample"] / summary["n_full_eligible"], abs=0.01
+    )
+
+    # Within each bucket SCHEME, every RS horizon's table must sum to the
+    # same n (the fixed common-sample population restricted to that
+    # scheme's value range -- coarse covers the whole 0-100 scale so sums
+    # to n_common_sample; fine_above_80 only covers RS>=80, so it sums to
+    # whatever subset of the common sample lands above 80, consistently
+    # across all 6 horizons since it's the same fixed row set throughout).
+    coarse_totals = {p.name: pd.read_csv(p)["n"].sum() for p in out_dir.glob("*__coarse__*.csv")}
+    fine_totals = {p.name: pd.read_csv(p)["n"].sum() for p in out_dir.glob("*__fine_above_80__*.csv")}
+    assert len(set(coarse_totals.values())) == 1
+    assert next(iter(coarse_totals.values())) == summary["n_common_sample"]
+    assert len(set(fine_totals.values())) == 1
+
+
+def test_common_sample_report_rejects_cross_year_range(warmup_pipeline):
+    args = argparse.Namespace(start=date(REPORT_YEAR, 6, 1), end=date(FUTURE_YEAR, 1, 5))
+    assert cli.cmd_build_rs_benchmark_common_sample_report(args) == 1

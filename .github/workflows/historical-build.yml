@@ -119,6 +119,19 @@ jobs:
             --start "${{ inputs.rs_benchmark_year }}-01-01" \
             --end "${{ inputs.rs_benchmark_year }}-12-31"
 
+      # Robustness check ONLY, additive to the step above -- restricts to
+      # rows where all 6 RS horizons are simultaneously populated, so the
+      # six horizons are compared on an IDENTICAL population instead of each
+      # horizon's own (slightly different) lookback-eligible set. Writes to
+      # a separate rs_benchmark_{year}_common_sample/ directory; never
+      # overwrites the full-sample report above (cli.py::cmd_build_rs_benchmark_common_sample_report).
+      - name: Build RS benchmark common-sample report (optional, single year)
+        if: inputs.rs_benchmark_year != ''
+        run: |
+          python -m yolo_calibration build-rs-benchmark-common-sample-report \
+            --start "${{ inputs.rs_benchmark_year }}-01-01" \
+            --end "${{ inputs.rs_benchmark_year }}-12-31"
+
       # Runs at the END (after the expensive market-cap enrichment step, not
       # before it) and unconditionally via if: always(), so that raw
       # checkpoints AND every market-cap lookup made so far are persisted

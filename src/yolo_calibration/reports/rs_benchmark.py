@@ -23,6 +23,17 @@ which raw MFE alone can conflate). Every number here is a plain descriptive
 aggregate — this module MUST NOT select a threshold, flag a "best" bucket,
 or pick a "best" RS horizon. That decision-making is explicitly out of
 scope (deferred, see README "Offen für Phase 2" point 6).
+
+Added 2026-08-14: `build_rs_benchmark_report_common_sample` is a ROBUSTNESS
+CHECK, not a replacement for `build_rs_benchmark_report`. Because each RS
+horizon needs a different lookback (1 day vs. 252 trading days), the
+full-sample report's six per-horizon populations differ slightly — a
+ticker with 8 months of trading history is missing from RS12M's tables but
+present in RS1D's. The common-sample variant fixes ONE row set (only rows
+where ALL SIX horizons are simultaneously populated) and buckets every
+horizon on that same fixed population, so any difference in the resulting
+statistics between the two variants isolates population effects from
+genuine RS-horizon effects.
 """
 
 from __future__ import annotations
@@ -112,13 +123,10 @@ def compute_bucket_stats(df: pd.DataFrame, bucket_col: str, horizon: int) -> pd.
     return out.reset_index()
 
 
-def build_rs_benchmark_report(stock_features_daily: pd.DataFrame,
-                               stock_outcomes_daily: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Returns a flat dict keyed "{rs_horizon}__{bucket_scheme}__{horizon}d"
-    -> bucket-stats DataFrame, for every combination of the 6 RS horizons x
-    2 bucket schemes x 3 outcome horizons (36 tables). Rows are restricted
-    to the ELIGIBLE universe (RS percentiles are only meaningful there —
-    non-eligible rows carry NaN RS by construction, see features/technical.py)."""
+def _validate_and_merge(stock_features_daily: pd.DataFrame,
+                         stock_outcomes_daily: pd.DataFrame) -> pd.DataFrame:
+    """Shared input validation + eligible-only merge used by both the
+    full-sample and common-sample report builders below."""
     required_feat = {"date", "ticker", "eligible", *RS_HORIZONS}
     missing_feat = required_feat - set(stock_features_daily.columns)
     if missing_feat:
@@ -126,16 +134,80 @@ def build_rs_benchmark_report(stock_features_daily: pd.DataFrame,
 
     merged = stock_features_daily.merge(stock_outcomes_daily, on=["date", "ticker"], how="inner")
     merged = merged[merged["eligible"].astype(bool)].copy()
+    return merged
 
+
+def _build_tables_from_rows(rows: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Buckets `rows` per RS horizon (on that horizon's OWN value) and
+    computes bucket_stats for every (RS horizon, bucket scheme, outcome
+    horizon) combination — the 36-table core shared by the full-sample and
+    common-sample report builders. Does not filter `rows` itself; callers
+    decide which row set to pass in (full eligible universe vs. the
+    common-sample subset)."""
     tables: dict[str, pd.DataFrame] = {}
     for rs_col in RS_HORIZONS:
-        coarse = bucket_coarse_deciles(merged[rs_col])
-        fine = bucket_fine_above_80(merged[rs_col])
+        coarse = bucket_coarse_deciles(rows[rs_col])
+        fine = bucket_fine_above_80(rows[rs_col])
         for scheme_name, bucket_series in (("coarse", coarse), ("fine_above_80", fine)):
-            work = merged.copy()
+            work = rows.copy()
             work["bucket"] = bucket_series
             for horizon in OUTCOME_HORIZONS_DAYS:
                 key = f"{rs_col}__{scheme_name}__{horizon}d"
                 tables[key] = compute_bucket_stats(work, "bucket", horizon)
-
     return tables
+
+
+def build_rs_benchmark_report(stock_features_daily: pd.DataFrame,
+                               stock_outcomes_daily: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Returns a flat dict keyed "{rs_horizon}__{bucket_scheme}__{horizon}d"
+    -> bucket-stats DataFrame, for every combination of the 6 RS horizons x
+    2 bucket schemes x 3 outcome horizons (36 tables). Rows are restricted
+    to the ELIGIBLE universe (RS percentiles are only meaningful there —
+    non-eligible rows carry NaN RS by construction, see features/technical.py).
+    Each RS horizon's table uses whatever rows happen to have a value for
+    THAT horizon — the population underlying rs_percentile_1d's tables can
+    therefore differ slightly from rs_percentile_12m's (different lookback
+    warmup requirements). See build_rs_benchmark_report_common_sample for a
+    fixed-population robustness check against this full-sample report."""
+    merged = _validate_and_merge(stock_features_daily, stock_outcomes_daily)
+    return _build_tables_from_rows(merged)
+
+
+def compute_common_sample_mask(df: pd.DataFrame) -> pd.Series:
+    """True only for rows where ALL SIX RS horizons are simultaneously
+    non-null — the fixed population used by build_rs_benchmark_report_common_sample.
+    A row missing even one RS horizon (e.g. a recent listing whose own
+    trading history is shorter than RS12M's 252-day lookback) is excluded
+    entirely, from every horizon's common-sample table, not just the one
+    it happens to be missing."""
+    mask = pd.Series(True, index=df.index)
+    for col in RS_HORIZONS:
+        mask &= df[col].notna()
+    return mask
+
+
+def build_rs_benchmark_report_common_sample(
+    stock_features_daily: pd.DataFrame, stock_outcomes_daily: pd.DataFrame,
+) -> tuple[dict[str, pd.DataFrame], dict]:
+    """ROBUSTNESS CHECK ONLY (see module docstring) — does not replace or
+    get read in place of build_rs_benchmark_report's full-sample tables.
+    Restricts to the fixed row set where every one of the 6 RS horizons is
+    simultaneously populated (compute_common_sample_mask), THEN buckets
+    each horizon on its own value within that same fixed population — so
+    every one of the 36 returned tables' `n` sums to the identical total
+    (the common-sample size), unlike the full-sample report where each RS
+    horizon's total can differ slightly. Returns (tables, summary) where
+    summary = {"n_common_sample", "n_full_eligible", "retained_pct"}."""
+    merged = _validate_and_merge(stock_features_daily, stock_outcomes_daily)
+    mask = compute_common_sample_mask(merged)
+    common = merged[mask].copy()
+
+    tables = _build_tables_from_rows(common)
+    n_full = len(merged)
+    n_common = len(common)
+    summary = {
+        "n_common_sample": n_common,
+        "n_full_eligible": n_full,
+        "retained_pct": round(100.0 * n_common / n_full, 2) if n_full else 0.0,
+    }
+    return tables, summary

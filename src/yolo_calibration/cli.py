@@ -6,6 +6,7 @@ Phase 1 intentionally has NO `optimize` / `choose-threshold` command.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, datetime
 
@@ -38,7 +39,7 @@ from yolo_calibration.reports.descriptive import (
     generate_qqq_health_sanity_reports,
     generate_stock_sanity_reports,
 )
-from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report
+from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report, build_rs_benchmark_report_common_sample
 from yolo_calibration.universe.build_universe import build_market_universe_daily
 from yolo_calibration.utils.logging import get_logger
 
@@ -271,6 +272,40 @@ def cmd_build_rs_benchmark_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_rs_benchmark_common_sample_report(args: argparse.Namespace) -> int:
+    """Robustness check ONLY (reports/rs_benchmark.py::build_rs_benchmark_report_common_sample)
+    — writes to a SEPARATE directory (rs_benchmark_{year}_common_sample/)
+    and never touches/overwrites the full-sample rs_benchmark_{year}/
+    tables from cmd_build_rs_benchmark_report. Same single-calendar-year
+    guard and year-partition-only read as the full-sample command."""
+    if args.start.year != args.end.year:
+        logger.error("RS benchmark common-sample report must be built for a single calendar year; got %s..%s.",
+                     args.start, args.end)
+        return 1
+    year = args.start.year
+
+    features = read_processed("stock_features_daily", years=[year])
+    outcomes = read_processed("stock_outcomes_daily", years=[year])
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) for year %d — run build-stock-features / "
+                     "build-stock-outcomes first.", year)
+        return 1
+
+    features = features[(features["date"] >= pd.Timestamp(args.start)) & (features["date"] <= pd.Timestamp(args.end))]
+    outcomes = outcomes[(outcomes["date"] >= pd.Timestamp(args.start)) & (outcomes["date"] <= pd.Timestamp(args.end))]
+
+    tables, summary = build_rs_benchmark_report_common_sample(features, outcomes)
+
+    out_dir = REPO_ROOT / "reports" / f"rs_benchmark_{year}_common_sample"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key, table in tables.items():
+        table.to_csv(out_dir / f"{key}.csv", index=False)
+    (out_dir / "_summary.json").write_text(json.dumps(summary, indent=2))
+    logger.info("Wrote %d RS benchmark common-sample tables + summary to %s (n_common_sample=%d, "
+                "retained_pct=%.2f%%)", len(tables), out_dir, summary["n_common_sample"], summary["retained_pct"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m yolo_calibration")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -329,6 +364,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "(no threshold/best-horizon selection).")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_build_rs_benchmark_report)
+
+    p = sub.add_parser("build-rs-benchmark-common-sample-report",
+                        help="Robustness check: same RS benchmark, restricted to rows where all 6 RS "
+                             "horizons are simultaneously populated. Writes to a separate directory, "
+                             "never replaces the full-sample report.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_rs_benchmark_common_sample_report)
 
     return parser
 
