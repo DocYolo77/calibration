@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from yolo_calibration.outcomes.build_outcomes import (
     build_horizon_outcomes,
@@ -88,6 +89,64 @@ def test_reached_plus_before_minus_tie_break_and_ordering():
     # Neither the up-first nor the down-first case is a same-day tie.
     assert out.iloc[0]["reached_plus_5_before_minus_5_tie_3d"] == False  # noqa: E712
     assert out2.iloc[0]["reached_plus_5_before_minus_5_tie_3d"] == False  # noqa: E712
+
+
+def test_asymmetric_race_pair_plus_10_before_minus_5():
+    dates = pd.bdate_range("2023-01-02", periods=4)
+    # Day1: high touches +10% first, low never reaches -5%.
+    df_up_first = pd.DataFrame({
+        "date": dates, "ticker": "AAA",
+        "close": [100, 100, 100, 100],
+        "high": [100, 111, 100, 100],
+        "low": [100, 100, 100, 100],
+        "atr14": [2.0] * 4,
+        "is_new_20d_high": [False] * 4,
+    })
+    out = build_horizon_outcomes(df_up_first, 3)
+    assert out.iloc[0]["reached_plus_10_before_minus_5_3d"] == True  # noqa: E712
+    assert out.iloc[0]["reached_plus_10_before_minus_5_tie_3d"] == False  # noqa: E712
+
+    # Day1: -5% hit first; day2: +10% hit -> down came first.
+    df_down_first = pd.DataFrame({
+        "date": dates, "ticker": "AAA",
+        "close": [100, 100, 100, 100],
+        "high": [100, 100, 111, 100],
+        "low": [100, 94, 94, 94],
+        "atr14": [2.0] * 4,
+        "is_new_20d_high": [False] * 4,
+    })
+    out2 = build_horizon_outcomes(df_down_first, 3)
+    assert out2.iloc[0]["reached_plus_10_before_minus_5_3d"] == False  # noqa: E712
+
+    # Same day both thresholds touched -> tie, conservative resolves to False.
+    df_tie = pd.DataFrame({
+        "date": dates, "ticker": "AAA",
+        "close": [100, 100, 100, 100],
+        "high": [100, 111, 100, 100],
+        "low": [100, 94, 100, 100],
+        "atr14": [2.0] * 4,
+        "is_new_20d_high": [False] * 4,
+    })
+    out3 = build_horizon_outcomes(df_tie, 3)
+    assert out3.iloc[0]["reached_plus_10_before_minus_5_3d"] == False  # noqa: E712
+    assert out3.iloc[0]["reached_plus_10_before_minus_5_tie_3d"] == True  # noqa: E712
+
+
+def test_asymmetric_race_pair_rejects_thresholds_not_in_pct_moves(monkeypatch):
+    import yolo_calibration.outcomes.build_outcomes as mod
+
+    bad_cfg = {
+        "outcome_thresholds": {
+            "pct_moves": [5.0, 10.0],
+            "atr_multiples": [2.0, 3.0],
+            "new_high_lookback_days": 20,
+            "asymmetric_race_pairs": [[15.0, 5.0]],  # 15.0 not in pct_moves
+        }
+    }
+    monkeypatch.setattr(mod, "load_features_config", lambda: bad_cfg)
+    df = _simple_series()
+    with pytest.raises(ValueError):
+        build_horizon_outcomes(df, 3)
 
 
 def test_reached_plus_before_minus_tie_flag_marks_non_determinable_same_day_hits():

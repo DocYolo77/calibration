@@ -23,6 +23,15 @@ reports/data_quality.py for the aggregated count. This makes the scope of
 the convention's effect on the resulting statistic auditable rather than
 merely a documented caveat.
 
+Asymmetric race pairs (added 2026-08-14, config `outcome_thresholds.asymmetric_race_pairs`,
+e.g. `[10.0, 5.0]`): the same "reached before" logic but with a DIFFERENT
+threshold on the up vs down side — e.g. `reached_plus_10_before_minus_5_{H}d`
+answers "did it reach +10% before it gave back -5%", not the symmetric
++10%-before--10% question. Requires both thresholds to already be in
+pct_moves (reuses their first-hit-day arrays, no extra O(n*horizon) pass).
+Same conservative tie-break and same `_tie` diagnostic convention as the
+symmetric pairs above.
+
 Memory note (found 2026-08-13 debugging an OOM on the full 2022-2026
 backfill, ~12M rows): the original implementation materialized an
 (n_rows, horizon) matrix per forward-looking quantity (high, low, the
@@ -67,6 +76,13 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
     cfg = load_features_config()["outcome_thresholds"]
     pct_thresholds = cfg["pct_moves"]
     atr_multiples = cfg["atr_multiples"]
+    asymmetric_race_pairs = cfg.get("asymmetric_race_pairs", [])
+    for up, down in asymmetric_race_pairs:
+        if up not in pct_thresholds or down not in pct_thresholds:
+            raise ValueError(
+                f"asymmetric_race_pairs entry [{up}, {down}] requires both thresholds to already be "
+                f"listed in pct_moves ({pct_thresholds}) — first-hit-day arrays are reused, not recomputed."
+            )
 
     n = len(df)
     close0 = df["close"].to_numpy()
@@ -163,6 +179,22 @@ def build_horizon_outcomes(df: pd.DataFrame, horizon: int, *,
         )
         same_day_tie = (up_day == down_day) & (up_day < horizon)
         out[f"reached_plus_{th_col}_before_minus_{th_col}_tie{suffix}"] = np.where(
+            window_complete, same_day_tie, np.nan
+        )
+
+    # Asymmetric "race" pairs (e.g. +10% before -5%): same tie-break
+    # convention and same _tie diagnostic, just up/down thresholds may
+    # differ. Reuses up_first_hit[up] / down_first_hit[down] computed above.
+    for up, down in asymmetric_race_pairs:
+        up_col = str(int(up)) if float(up).is_integer() else str(up)
+        down_col = str(int(down)) if float(down).is_integer() else str(down)
+        up_day, down_day = up_first_hit[up], down_first_hit[down]
+        reached_before = up_day < down_day
+        out[f"reached_plus_{up_col}_before_minus_{down_col}{suffix}"] = np.where(
+            window_complete, reached_before, np.nan
+        )
+        same_day_tie = (up_day == down_day) & (up_day < horizon)
+        out[f"reached_plus_{up_col}_before_minus_{down_col}_tie{suffix}"] = np.where(
             window_complete, same_day_tie, np.nan
         )
 

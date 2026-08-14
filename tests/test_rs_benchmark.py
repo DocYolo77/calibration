@@ -47,17 +47,23 @@ def test_compute_bucket_stats_values_and_probabilities():
         "reached_plus_10pct_10d": [1.0, 0.0, 0.0, 0.0],
         "reached_2atr_10d": [1.0, 1.0, 1.0, 0.0],
         "reached_3atr_10d": [0.0, 0.0, 0.0, 0.0],
+        "reached_plus_5_before_minus_5_10d": [1.0, 1.0, 0.0, 0.0],
+        "reached_plus_10_before_minus_5_10d": [1.0, 0.0, 0.0, 0.0],
     })
     out = compute_bucket_stats(df, "bucket", 10)
 
     row_a = out[out["bucket"] == "A"].iloc[0]
     assert row_a["n"] == 3
-    assert row_a["mfe_pct_median"] == 20.0
-    assert abs(row_a["mfe_pct_mean"] - 20.0) < 1e-9
-    assert abs(row_a["prob_plus_5pct"] - (2 / 3)) < 1e-9
-    assert abs(row_a["prob_plus_10pct"] - (1 / 3)) < 1e-9
-    assert row_a["prob_2atr"] == 1.0
-    assert row_a["prob_3atr"] == 0.0
+    assert row_a["median_mfe_pct"] == 20.0
+    assert abs(row_a["mean_mfe_pct"] - 20.0) < 1e-9
+    assert row_a["p75_mfe_pct"] == pd.Series([10.0, 20.0, 30.0]).quantile(0.75)
+    assert row_a["p90_mfe_pct"] == pd.Series([10.0, 20.0, 30.0]).quantile(0.90)
+    assert abs(row_a["reached_plus_5pct_share"] - (2 / 3)) < 1e-9
+    assert abs(row_a["reached_plus_10pct_share"] - (1 / 3)) < 1e-9
+    assert row_a["reached_2atr_share"] == 1.0
+    assert row_a["reached_3atr_share"] == 0.0
+    assert abs(row_a["reached_plus_5_before_minus_5_share"] - (2 / 3)) < 1e-9
+    assert abs(row_a["reached_plus_10_before_minus_5_share"] - (1 / 3)) < 1e-9
 
     row_b = out[out["bucket"] == "B"].iloc[0]
     assert row_b["n"] == 1
@@ -65,7 +71,19 @@ def test_compute_bucket_stats_values_and_probabilities():
     # Category "C" has zero rows -- must still appear (visible gap), not be dropped.
     row_c = out[out["bucket"] == "C"].iloc[0]
     assert row_c["n"] == 0
-    assert pd.isna(row_c["mfe_pct_median"])
+    assert pd.isna(row_c["median_mfe_pct"])
+
+
+def test_compute_bucket_stats_raises_when_race_outcome_column_missing():
+    df = pd.DataFrame({
+        "bucket": pd.Categorical(["A"], categories=["A"]),
+        "mfe_pct_5d": [1.0], "mae_pct_5d": [-1.0], "forward_return_close_5d": [1.0],
+        "reached_plus_5pct_5d": [1.0], "reached_plus_10pct_5d": [1.0],
+        "reached_2atr_5d": [1.0], "reached_3atr_5d": [1.0],
+        # race-outcome columns intentionally omitted
+    })
+    with pytest.raises(ValueError):
+        compute_bucket_stats(df, "bucket", 5)
 
 
 def test_no_threshold_selection_or_best_horizon_columns():
@@ -76,6 +94,7 @@ def test_no_threshold_selection_or_best_horizon_columns():
         "mfe_pct_5d": [1.0], "mae_pct_5d": [-1.0], "forward_return_close_5d": [1.0],
         "reached_plus_5pct_5d": [1.0], "reached_plus_10pct_5d": [1.0],
         "reached_2atr_5d": [1.0], "reached_3atr_5d": [1.0],
+        "reached_plus_5_before_minus_5_5d": [1.0], "reached_plus_10_before_minus_5_5d": [1.0],
     })
     out = compute_bucket_stats(df, "bucket", 5)
     forbidden_tokens = ("best", "optimal", "threshold", "recommend", "selected")
@@ -105,18 +124,24 @@ def _synthetic_features_outcomes():
                 "reached_plus_10pct_5d": float(rng.random() < 0.2),
                 "reached_2atr_5d": float(rng.random() < 0.3),
                 "reached_3atr_5d": float(rng.random() < 0.1),
+                "reached_plus_5_before_minus_5_5d": float(rng.random() < 0.35),
+                "reached_plus_10_before_minus_5_5d": float(rng.random() < 0.15),
                 "mfe_pct_10d": rng.normal(8, 3), "mae_pct_10d": -rng.normal(4, 1),
                 "forward_return_close_10d": rng.normal(2, 4),
                 "reached_plus_5pct_10d": float(rng.random() < 0.6),
                 "reached_plus_10pct_10d": float(rng.random() < 0.3),
                 "reached_2atr_10d": float(rng.random() < 0.4),
                 "reached_3atr_10d": float(rng.random() < 0.15),
+                "reached_plus_5_before_minus_5_10d": float(rng.random() < 0.45),
+                "reached_plus_10_before_minus_5_10d": float(rng.random() < 0.25),
                 "mfe_pct_20d": rng.normal(12, 4), "mae_pct_20d": -rng.normal(5, 2),
                 "forward_return_close_20d": rng.normal(3, 5),
                 "reached_plus_5pct_20d": float(rng.random() < 0.7),
                 "reached_plus_10pct_20d": float(rng.random() < 0.4),
                 "reached_2atr_20d": float(rng.random() < 0.5),
                 "reached_3atr_20d": float(rng.random() < 0.2),
+                "reached_plus_5_before_minus_5_20d": float(rng.random() < 0.55),
+                "reached_plus_10_before_minus_5_20d": float(rng.random() < 0.35),
             })
     # A few non-eligible rows that must be excluded entirely.
     feat_rows.append({

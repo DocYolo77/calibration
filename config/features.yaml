@@ -84,3 +84,15 @@ outcome_thresholds:
   pct_moves: [5.0, 10.0]
   atr_multiples: [2.0, 3.0]
   new_high_lookback_days: 20
+  # Cross-threshold "race" outcomes (asymmetric up/down threshold pairs),
+  # in addition to the symmetric reached_plus_X_before_minus_X pairs above
+  # (same threshold both sides). Each [up, down] pair produces
+  # reached_plus_{up}_before_minus_{down}_{H}d, reusing the per-threshold
+  # first-hit-day arrays already computed for pct_moves above (no separate
+  # O(n*horizon) pass) — both `up` and `down` MUST already be listed in
+  # pct_moves. Same conservative same-day tie-break as the symmetric pairs;
+  # added 2026-08-14 for the 2024 RS benchmark report (distinguishes
+  # genuine momentum-expansion quality from plain volatility, which raw
+  # MFE alone can conflate).
+  asymmetric_race_pairs:
+    - [10.0, 5.0]

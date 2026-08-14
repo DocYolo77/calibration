@@ -13,9 +13,13 @@ stable interpretation across horizons and years:
     spanning only the top quintile, for higher resolution where RS-driven
     momentum-expansion effects are most likely to show curvature.
 
-Per (RS horizon, bucket, outcome horizon): sample size, median/mean of
-mfe_pct/mae_pct/forward_return_close, and the hit-probability of each of
-reached_plus_5pct/10pct/2atr/3atr. Every number here is a plain descriptive
+Per (RS horizon, bucket, outcome horizon): sample size, median/mean/p75/p90
+of mfe_pct, median/mean of mae_pct and forward_return, the hit-probability
+of each of reached_plus_5pct/10pct/2atr/3atr, and the two "race" outcome
+probabilities P(+5% before -5%) and P(+10% before -5%) (see
+outcomes/build_outcomes.py — the latter is an asymmetric threshold pair,
+distinguishing genuine momentum-expansion quality from plain volatility,
+which raw MFE alone can conflate). Every number here is a plain descriptive
 aggregate — this module MUST NOT select a threshold, flag a "best" bucket,
 or pick a "best" RS horizon. That decision-making is explicitly out of
 scope (deferred, see README "Offen für Phase 2" point 6).
@@ -33,6 +37,14 @@ RS_HORIZONS = (
 OUTCOME_HORIZONS_DAYS = (5, 10, 20)
 PCT_THRESHOLDS = (5, 10)
 ATR_MULTIPLES = (2, 3)
+# (output_field_suffix, source_column_infix) -- source columns are
+# outcomes/build_outcomes.py's reached_plus_{up}_before_minus_{down}_{H}d.
+# Fixed, explicit pair list (not derived from config) since these two
+# specific race outcomes were named directly in the report requirements.
+RACE_PAIRS = (
+    ("reached_plus_5_before_minus_5_share", "reached_plus_5_before_minus_5"),
+    ("reached_plus_10_before_minus_5_share", "reached_plus_10_before_minus_5"),
+)
 
 _COARSE_BINS = list(range(0, 101, 10))
 _COARSE_LABELS = [f"{lo}-{hi}" for lo, hi in zip(_COARSE_BINS[:-1], _COARSE_BINS[1:])]
@@ -64,20 +76,37 @@ def compute_bucket_stats(df: pd.DataFrame, bucket_col: str, horizon: int) -> pd.
     g = df.groupby(bucket_col, observed=False)
 
     out = pd.DataFrame({"n": g.size()})
-    for col, label in (
-        (f"mfe_pct_{horizon}d", "mfe_pct"),
-        (f"mae_pct_{horizon}d", "mae_pct"),
-        (f"forward_return_close_{horizon}d", "forward_return"),
-    ):
-        out[f"{label}_median"] = g[col].median()
-        out[f"{label}_mean"] = g[col].mean()
+
+    mfe_col = f"mfe_pct_{horizon}d"
+    out["median_mfe_pct"] = g[mfe_col].median()
+    out["mean_mfe_pct"] = g[mfe_col].mean()
+    out["p75_mfe_pct"] = g[mfe_col].quantile(0.75)
+    out["p90_mfe_pct"] = g[mfe_col].quantile(0.90)
+
+    mae_col = f"mae_pct_{horizon}d"
+    out["median_mae_pct"] = g[mae_col].median()
+    out["mean_mae_pct"] = g[mae_col].mean()
+
+    fwd_col = f"forward_return_close_{horizon}d"
+    out["median_forward_return"] = g[fwd_col].median()
+    out["mean_forward_return"] = g[fwd_col].mean()
 
     for th in PCT_THRESHOLDS:
         col = f"reached_plus_{th}pct_{horizon}d"
-        out[f"prob_plus_{th}pct"] = g[col].mean()
+        out[f"reached_plus_{th}pct_share"] = g[col].mean()
     for mult in ATR_MULTIPLES:
         col = f"reached_{mult}atr_{horizon}d"
-        out[f"prob_{mult}atr"] = g[col].mean()
+        out[f"reached_{mult}atr_share"] = g[col].mean()
+
+    for out_field, source_infix in RACE_PAIRS:
+        col = f"{source_infix}_{horizon}d"
+        if col not in df.columns:
+            raise ValueError(
+                f"Missing race-outcome column '{col}' — stock_outcomes_daily must be built with "
+                f"config/features.yaml outcome_thresholds.asymmetric_race_pairs including the pair "
+                f"this field derives from (see outcomes/build_outcomes.py)."
+            )
+        out[out_field] = g[col].mean()
 
     out.index.name = "bucket"
     return out.reset_index()
