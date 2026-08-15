@@ -146,6 +146,24 @@ jobs:
             --start "${{ inputs.rs_benchmark_year }}-01-01" \
             --end "${{ inputs.rs_benchmark_year }}-12-31"
 
+      # Phase-2 descriptive study (reports/opportunity_state_study.py):
+      # RS x EMA10/EMA20-distance and previous-extension ("repeat
+      # offender") cross-tabulations. Unlike the two steps above, this one
+      # needs REAL trailing history for the previous-extension windows
+      # (60 trading days) -- passes the job's full start_date (which
+      # already spans extra years purely as point-in-time lookback) as
+      # `start`, and rs_benchmark_year-12-31 as `end`; only end.year's
+      # signal rows ever appear in the report
+      # (cli.py::cmd_build_opportunity_state_study). Writes to its own
+      # opportunity_state_{year}/ directory, never touching the
+      # rs_benchmark_*/ or rs_atr_extension_*/ report directories.
+      - name: Build Opportunity-State study (optional, single target year)
+        if: inputs.rs_benchmark_year != ''
+        run: |
+          python -m yolo_calibration build-opportunity-state-study \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.rs_benchmark_year }}-12-31"
+
       # Runs at the END (after the expensive market-cap enrichment step, not
       # before it) and unconditionally via if: always(), so that raw
       # checkpoints AND every market-cap lookup made so far are persisted

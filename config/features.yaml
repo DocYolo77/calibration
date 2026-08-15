@@ -96,3 +96,16 @@ outcome_thresholds:
   # MFE alone can conflate).
   asymmetric_race_pairs:
     - [10.0, 5.0]
+
+prior_extension_history:
+  # Repeat-offender / opportunity-state research inputs (Phase 2,
+  # reports/opportunity_state_study.py) — DEFINITIONS of what point-in-time
+  # history to compute, not a "resetting"/"extended" threshold. All windows
+  # are trailing, in trading days, and EXCLUDE the current row (a value on
+  # day t only ever looks at day t-1 and earlier — see
+  # features/repeat_offender.py for the leakage-safety guarantee).
+  windows_days: [20, 40, 60]     # max_atr_extension_prior_{20,40,60}d
+  peak_window_days: 60           # canonical window for the single "previous
+                                  # peak" (day-of-peak, days-since-peak,
+                                  # drawdown-from-peak, min EMA distance
+                                  # since peak) — must be one of windows_days.

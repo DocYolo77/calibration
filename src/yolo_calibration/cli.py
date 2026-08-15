@@ -39,6 +39,7 @@ from yolo_calibration.reports.descriptive import (
     generate_qqq_health_sanity_reports,
     generate_stock_sanity_reports,
 )
+from yolo_calibration.reports.opportunity_state_study import build_opportunity_state_study
 from yolo_calibration.reports.rs_atr_extension_study import build_rs_atr_extension_study
 from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report, build_rs_benchmark_report_common_sample
 from yolo_calibration.universe.build_universe import build_market_universe_daily
@@ -359,6 +360,70 @@ def cmd_build_rs_atr_extension_study(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_opportunity_state_study(args: argparse.Namespace) -> int:
+    """Descriptive Phase-2 Opportunity-State study
+    (reports/opportunity_state_study.py): RS x EMA10/EMA20-distance and
+    previous-ATR-extension x current-EMA-distance ("repeat offender")
+    cross-tabulations, for ONE target calendar year. Unlike the other
+    Phase-2 report commands, this one REQUIRES `start` to be in an earlier
+    calendar year than `end` — the previous-extension-history windows
+    (config/features.yaml `prior_extension_history`, 60 trading days) need
+    real trailing history the target year alone cannot supply, and
+    `end.year` is treated as the single target/output year (mirrors the
+    existing rs_benchmark_year workflow input: `start` may span extra
+    years purely as point-in-time lookback, only `end.year`'s signal rows
+    ever appear in the report). Writes to a NEW, separate
+    opportunity_state_{year}/ directory and never touches the existing
+    rs_benchmark_*/ or rs_atr_extension_*/ report directories."""
+    if args.start.year >= args.end.year:
+        logger.error("Opportunity-State study needs `start` in an earlier calendar year than `end` "
+                     "(end.year is the single target year; start..end supplies the trailing lookback "
+                     "history) — got %s..%s.", args.start, args.end)
+        return 1
+    year = args.end.year
+    lookback_years = list(range(args.start.year, args.end.year + 1))
+
+    features = read_processed("stock_features_daily", years=lookback_years)
+    outcomes = read_processed("stock_outcomes_daily", years=[year])
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) for years %s — run build-stock-features / "
+                     "build-stock-outcomes first.", lookback_years)
+        return 1
+
+    # Defense in depth: restrict to the exact requested ranges even though
+    # the year-partitioned reads above already scope the tables.
+    features = features[(features["date"] >= pd.Timestamp(args.start)) & (features["date"] <= pd.Timestamp(args.end))]
+    year_start, year_end = pd.Timestamp(year, 1, 1), pd.Timestamp(year, 12, 31)
+    outcomes = outcomes[(outcomes["date"] >= year_start) & (outcomes["date"] <= year_end)]
+
+    tables, summary = build_opportunity_state_study(features, outcomes, year)
+
+    out_dir = REPO_ROOT / "reports" / f"opportunity_state_{year}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key, table in tables.items():
+        table.to_csv(out_dir / f"{key}.csv", index=False)
+        table.to_parquet(out_dir / f"{key}.parquet", index=False)
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "METHODOLOGY.md").write_text(
+        f"# Opportunity-State Study — {year}\n\n"
+        "Purely descriptive Phase-2 cross-tabulation. NO threshold selection, "
+        "NO Normal/Extended/Resetting classification, NO trading rule — see "
+        "src/yolo_calibration/reports/opportunity_state_study.py module docstring "
+        "for the full bucket/metric/baseline definitions.\n\n"
+        f"- Target/signal year: {year} (exclusively); {args.start}..{year-1}-12-31 used only as "
+        "point-in-time lookback for RS3M/6M and the previous-extension-history windows.\n"
+        f"- n eligible {year} rows: {summary['n_eligible_total']}\n"
+        f"- RS horizon coverage: {json.dumps(summary['rs_horizon_coverage'])}\n"
+        f"- High-RS (>= {summary['high_rs_threshold']}) coverage: {json.dumps(summary['high_rs_coverage'])}\n"
+        f"- Previous-extension-peak coverage: {json.dumps(summary['prior_extension_coverage'])}\n"
+        f"- Small-sample threshold (transparency only, no merging): {summary['small_sample_threshold']} "
+        f"({summary['small_sample_cell_count_total']} cells below it across all tables)\n"
+    )
+    logger.info("Wrote Opportunity-State study (%d tables, %d small-sample cells) to %s",
+                len(tables), summary["small_sample_cell_count_total"], out_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m yolo_calibration")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -430,6 +495,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "(no threshold/best-cell selection). Writes to a new, separate directory.")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_build_rs_atr_extension_study)
+
+    p = sub.add_parser("build-opportunity-state-study",
+                        help="Descriptive RS x EMA10/EMA20-distance and previous-extension "
+                             "('repeat offender') cross-tabulations for one target calendar year "
+                             "(no state classification, no threshold selection). `end`.year is the "
+                             "target year; `start` must be in an earlier year to supply lookback.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_opportunity_state_study)
 
     return parser
 
