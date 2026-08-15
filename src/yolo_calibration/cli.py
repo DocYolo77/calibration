@@ -39,6 +39,7 @@ from yolo_calibration.reports.descriptive import (
     generate_qqq_health_sanity_reports,
     generate_stock_sanity_reports,
 )
+from yolo_calibration.reports.rs_atr_extension_study import build_rs_atr_extension_study
 from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report, build_rs_benchmark_report_common_sample
 from yolo_calibration.universe.build_universe import build_market_universe_daily
 from yolo_calibration.utils.logging import get_logger
@@ -306,6 +307,58 @@ def cmd_build_rs_benchmark_common_sample_report(args: argparse.Namespace) -> int
     return 0
 
 
+def cmd_build_rs_atr_extension_study(args: argparse.Namespace) -> int:
+    """Descriptive Phase-2 RS x ATR-Extension cross-tabulation
+    (reports/rs_atr_extension_study.py), for ONE calendar year at a time.
+    Same single-calendar-year guard, same year-partition-only read, and the
+    same point-in-time discipline as cmd_build_rs_benchmark_report — writes
+    to a NEW, separate rs_atr_extension_{year}/ directory and never touches
+    the existing rs_benchmark_{year}/ or rs_benchmark_{year}_common_sample/
+    report directories."""
+    if args.start.year != args.end.year:
+        logger.error("RS x ATR Extension study must be built for a single calendar year; got %s..%s.",
+                     args.start, args.end)
+        return 1
+    year = args.start.year
+
+    features = read_processed("stock_features_daily", years=[year])
+    outcomes = read_processed("stock_outcomes_daily", years=[year])
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) for year %d — run build-stock-features / "
+                     "build-stock-outcomes first.", year)
+        return 1
+
+    # Defense in depth: restrict to the exact requested range even though
+    # the year-partitioned read above already scopes to `year`.
+    features = features[(features["date"] >= pd.Timestamp(args.start)) & (features["date"] <= pd.Timestamp(args.end))]
+    outcomes = outcomes[(outcomes["date"] >= pd.Timestamp(args.start)) & (outcomes["date"] <= pd.Timestamp(args.end))]
+
+    tables, summary = build_rs_atr_extension_study(features, outcomes)
+
+    out_dir = REPO_ROOT / "reports" / f"rs_atr_extension_{year}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key, table in tables.items():
+        table.to_csv(out_dir / f"{key}.csv", index=False)
+        table.to_parquet(out_dir / f"{key}.parquet", index=False)
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "METHODOLOGY.md").write_text(
+        f"# RS x ATR Extension Study — {year}\n\n"
+        "Purely descriptive Phase-2 cross-tabulation. NO threshold selection, "
+        "NO \"best\" cell/RS-horizon marking, NO trading rule — see "
+        "src/yolo_calibration/reports/rs_atr_extension_study.py module docstring "
+        "for the full bucket/metric/baseline definitions.\n\n"
+        f"- Signal period: {args.start} .. {args.end} (exclusively; pre-{year} data "
+        "used only as point-in-time lookback for feature computation).\n"
+        f"- n eligible {year} DATE x TICKER rows: {summary['n_eligible_2024_total']}\n"
+        f"- RS horizon coverage: {json.dumps(summary['rs_horizon_coverage'])}\n"
+        f"- Small-sample threshold (transparency only, no merging): {summary['small_sample_threshold']} "
+        f"({summary['small_sample_cell_count']} cells below it)\n"
+    )
+    logger.info("Wrote RS x ATR Extension study (%d cross-matrix rows, %d small-sample cells) to %s",
+                len(tables["cross_matrix"]), summary["small_sample_cell_count"], out_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m yolo_calibration")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -371,6 +424,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "never replaces the full-sample report.")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_build_rs_benchmark_common_sample_report)
+
+    p = sub.add_parser("build-rs-atr-extension-study",
+                        help="Descriptive RS x ATR-Extension cross-tabulation for one calendar year "
+                             "(no threshold/best-cell selection). Writes to a new, separate directory.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_rs_atr_extension_study)
 
     return parser
 

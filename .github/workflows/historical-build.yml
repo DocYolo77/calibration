@@ -132,6 +132,20 @@ jobs:
             --start "${{ inputs.rs_benchmark_year }}-01-01" \
             --end "${{ inputs.rs_benchmark_year }}-12-31"
 
+      # Phase-2 descriptive study (reports/rs_atr_extension_study.py),
+      # additive to the two steps above -- reuses the same rs_benchmark_year
+      # input and the same single-calendar-year / point-in-time-lookback
+      # discipline, but writes to its OWN rs_atr_extension_{year}/ directory
+      # and never touches the rs_benchmark_{year}/ or
+      # rs_benchmark_{year}_common_sample/ report directories
+      # (cli.py::cmd_build_rs_atr_extension_study).
+      - name: Build RS x ATR Extension study (optional, single year)
+        if: inputs.rs_benchmark_year != ''
+        run: |
+          python -m yolo_calibration build-rs-atr-extension-study \
+            --start "${{ inputs.rs_benchmark_year }}-01-01" \
+            --end "${{ inputs.rs_benchmark_year }}-12-31"
+
       # Runs at the END (after the expensive market-cap enrichment step, not
       # before it) and unconditionally via if: always(), so that raw
       # checkpoints AND every market-cap lookup made so far are persisted

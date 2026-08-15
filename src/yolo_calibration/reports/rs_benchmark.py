@@ -79,11 +79,13 @@ def bucket_fine_above_80(rs: pd.Series) -> pd.Series:
     return pd.cut(rs, bins=_FINE_BINS, labels=_FINE_LABELS, include_lowest=True, right=True)
 
 
-def compute_bucket_stats(df: pd.DataFrame, bucket_col: str, horizon: int) -> pd.DataFrame:
-    """One row per bucket value present in df[bucket_col] (categorical
-    dtype — empty buckets are NOT silently dropped, they appear with n=0
-    and NaN stats, so a sparse/absent region of the RS scale stays visible
-    rather than disappearing from the table)."""
+def compute_bucket_stats(df: pd.DataFrame, bucket_col: str | list[str], horizon: int) -> pd.DataFrame:
+    """One row per bucket value (or bucket-value COMBINATION, if bucket_col
+    is a list — e.g. an RS-bucket x ATR-extension-bucket cross-tabulation,
+    see reports/rs_atr_extension_study.py) present in df[bucket_col]
+    (categorical dtype — empty buckets/combinations are NOT silently
+    dropped, they appear with n=0 and NaN stats, so a sparse/absent region
+    stays visible rather than disappearing from the table)."""
     g = df.groupby(bucket_col, observed=False)
 
     out = pd.DataFrame({"n": g.size()})
@@ -119,7 +121,10 @@ def compute_bucket_stats(df: pd.DataFrame, bucket_col: str, horizon: int) -> pd.
             )
         out[out_field] = g[col].mean()
 
-    out.index.name = "bucket"
+    if isinstance(bucket_col, str):
+        out.index.name = "bucket"
+        # else: groupby(list) already produced a MultiIndex named after
+        # each column in bucket_col — reset_index() below uses those names.
     return out.reset_index()
 
 
