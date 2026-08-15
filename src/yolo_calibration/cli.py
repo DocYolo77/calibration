@@ -39,6 +39,7 @@ from yolo_calibration.reports.descriptive import (
     generate_qqq_health_sanity_reports,
     generate_stock_sanity_reports,
 )
+from yolo_calibration.reports.opportunity_state_candidate_rules import build_candidate_rules_report
 from yolo_calibration.reports.opportunity_state_study import build_opportunity_state_study
 from yolo_calibration.reports.rs_atr_extension_study import build_rs_atr_extension_study
 from yolo_calibration.reports.rs_benchmark import build_rs_benchmark_report, build_rs_benchmark_report_common_sample
@@ -424,6 +425,61 @@ def cmd_build_opportunity_state_study(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_opportunity_state_candidate_rules_report(args: argparse.Namespace) -> int:
+    """Applies the FROZEN Opportunity-State Candidate Rules v1
+    (reports/opportunity_state_candidate_rules.py) to ONE target calendar
+    year. Same lookback semantics as cmd_build_opportunity_state_study
+    (`start` must be an earlier calendar year than `end`; `end`.year is the
+    target year) -- this is what makes the SAME command, run once with
+    end.year=2024 and once with end.year=2023, produce the 2024 report the
+    rules were derived from and the frozen 2023 robustness check off the
+    identical code path. Writes to its own
+    opportunity_state_candidate_rules_{year}/ directory, never touching the
+    other Phase-2 report directories."""
+    if args.start.year >= args.end.year:
+        logger.error("Opportunity-State Candidate Rules report needs `start` in an earlier calendar year "
+                     "than `end` (end.year is the single target year) — got %s..%s.", args.start, args.end)
+        return 1
+    year = args.end.year
+    lookback_years = list(range(args.start.year, args.end.year + 1))
+
+    features = read_processed("stock_features_daily", years=lookback_years)
+    outcomes = read_processed("stock_outcomes_daily", years=[year])
+    if features.empty or outcomes.empty:
+        logger.error("Missing prerequisite table(s) for years %s — run build-stock-features / "
+                     "build-stock-outcomes first.", lookback_years)
+        return 1
+
+    features = features[(features["date"] >= pd.Timestamp(args.start)) & (features["date"] <= pd.Timestamp(args.end))]
+    year_start, year_end = pd.Timestamp(year, 1, 1), pd.Timestamp(year, 12, 31)
+    outcomes = outcomes[(outcomes["date"] >= year_start) & (outcomes["date"] <= year_end)]
+
+    tables, summary = build_candidate_rules_report(features, outcomes, year)
+
+    out_dir = REPO_ROOT / "reports" / f"opportunity_state_candidate_rules_{year}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for key, table in tables.items():
+        table.to_csv(out_dir / f"{key}.csv", index=False)
+        table.to_parquet(out_dir / f"{key}.parquet", index=False)
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "METHODOLOGY.md").write_text(
+        f"# Opportunity-State Candidate Rules v1 — {year}\n\n"
+        "FROZEN candidate classification (Normal/Extended/Resetting), NOT a production rule. "
+        "See src/yolo_calibration/reports/opportunity_state_candidate_rules.py module docstring "
+        "for the exact thresholds and their justification from the 2024 descriptive studies.\n\n"
+        f"- Target/signal year: {year} (exclusively); {args.start}..{year-1}-12-31 used only as "
+        "point-in-time lookback.\n"
+        f"- n eligible {year} rows: {summary['n_eligible_total']}\n"
+        f"- Candidate rule thresholds: {json.dumps(summary['candidate_rule_thresholds'])}\n"
+        f"- State population: {json.dumps(summary['state_population'])}\n"
+        f"- Small-sample threshold (transparency only, no merging): {summary['small_sample_threshold']} "
+        f"({summary['small_sample_cell_count_total']} cells below it)\n"
+    )
+    logger.info("Wrote Opportunity-State Candidate Rules report for %d (%d small-sample cells) to %s",
+                year, summary["small_sample_cell_count_total"], out_dir)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m yolo_calibration")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -503,6 +559,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "target year; `start` must be in an earlier year to supply lookback.")
     _add_date_range_args(p)
     p.set_defaults(func=cmd_build_opportunity_state_study)
+
+    p = sub.add_parser("build-opportunity-state-candidate-rules-report",
+                        help="Applies the FROZEN Candidate Rules v1 (Normal/Extended/Resetting) to one "
+                             "target calendar year. `end`.year is the target year; `start` must be in an "
+                             "earlier year to supply lookback. Same command/thresholds for the 2024 report "
+                             "and the frozen 2023 robustness check.")
+    _add_date_range_args(p)
+    p.set_defaults(func=cmd_build_opportunity_state_candidate_rules_report)
 
     return parser
 

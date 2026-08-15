@@ -154,8 +154,11 @@ def _universe_baseline_rows(df: pd.DataFrame) -> dict[int, pd.Series]:
     return rows
 
 
-def _validate_and_prepare(stock_features_daily: pd.DataFrame, stock_outcomes_daily: pd.DataFrame,
-                           year: int) -> pd.DataFrame:
+def prepare_eligible_year_rows(stock_features_daily: pd.DataFrame, stock_outcomes_daily: pd.DataFrame,
+                                year: int) -> pd.DataFrame:
+    """Shared point-in-time prep, reused by reports/opportunity_state_candidate_rules.py:
+    computes prior-extension history on the FULL unfiltered input, then
+    restricts output rows to `year` only (see module docstring)."""
     required_feat = {"date", "ticker", "eligible", "atr_extension",
                       "distance_ema10_pct", "distance_ema20_pct", *RS_HORIZONS}
     missing = required_feat - set(stock_features_daily.columns)
@@ -186,7 +189,7 @@ def build_opportunity_state_study(
     `prior_extension_history.peak_window_days`, 60 trading days) -- e.g.
     the full prior calendar year. Rows from `year` are the ONLY output
     rows; earlier rows are lookback-only and a later year raises."""
-    merged = _validate_and_prepare(stock_features_daily, stock_outcomes_daily, year)
+    merged = prepare_eligible_year_rows(stock_features_daily, stock_outcomes_daily, year)
     universe_by_h = _universe_baseline_rows(merged)
 
     merged["ema10_bucket"] = bucket_ema_distance(merged["distance_ema10_pct"])
