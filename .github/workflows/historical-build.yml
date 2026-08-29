@@ -180,8 +180,17 @@ jobs:
             --start "${{ inputs.start_date }}" \
             --end "${{ inputs.rs_benchmark_year }}-12-31"
 
+      # continue-on-error: this step only makes sense when start_date's
+      # year is before 2023 (it needs real lookback before its own target
+      # year, same guard as the step above) -- a run dispatched with e.g.
+      # start_date=2023-01-01 for the OTHER Phase-2 steps correctly fails
+      # this one, and that must never cascade into skipping every later
+      # step (GitHub Actions skips subsequent default-condition steps
+      # after a failure) -- this step's own success or failure is
+      # independent of the rest of the job.
       - name: Build Opportunity-State Candidate Rules report (2023 robustness check, frozen rules)
         if: inputs.rs_benchmark_year == '2024'
+        continue-on-error: true
         run: |
           python -m yolo_calibration build-opportunity-state-candidate-rules-report \
             --start "${{ inputs.start_date }}" \
