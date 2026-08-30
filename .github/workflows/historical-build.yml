@@ -198,16 +198,29 @@ jobs:
 
       # EMA Pullback Range Study (reports/ema_pullback_range_study.py):
       # calibrates ONLY the future "EMA10 Pullback" / "EMA20 Pullback"
-      # dashboard labels. 2024-only per the current spec -- deliberately
-      # NOT also run for 2023 yet (unlike the Candidate Rules step above);
-      # a 2023 robustness pass only happens after the candidate ranges this
-      # study proposes are reviewed and explicitly approved.
-      - name: Build EMA Pullback Range Study (target year only, no 2023 yet)
+      # dashboard labels.
+      - name: Build EMA Pullback Range Study (target year)
         if: inputs.rs_benchmark_year != ''
         run: |
           python -m yolo_calibration build-ema-pullback-range-study \
             --start "${{ inputs.start_date }}" \
             --end "${{ inputs.rs_benchmark_year }}-12-31"
+
+      # 2023 robustness check for the candidate ranges proposed from the
+      # 2024 study above (EMA10/EMA20 Pullback: -5% to +6%, approved for
+      # this frozen check) -- CANDIDATE_GRID_LO/HI in
+      # ema_pullback_range_study.py are fixed module constants, so the
+      # SAME exploratory grid (including the -5/+6 row) is recomputed
+      # unchanged against 2023, nothing here re-derives or re-optimizes
+      # against 2023 itself. Same continue-on-error rationale as the
+      # Candidate Rules 2023 step above.
+      - name: Build EMA Pullback Range Study (2023 robustness check, frozen candidate grid)
+        if: inputs.rs_benchmark_year == '2024'
+        continue-on-error: true
+        run: |
+          python -m yolo_calibration build-ema-pullback-range-study \
+            --start "${{ inputs.start_date }}" \
+            --end "2023-12-31"
 
       # Runs at the END (after the expensive market-cap enrichment step, not
       # before it) and unconditionally via if: always(), so that raw
